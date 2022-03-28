@@ -1,0 +1,7 @@
+{
+  "ClientAPIListenAddr": "127.0.0.1:22745",
+  "MinerAPIListenAddr": "127.0.0.1:22746",
+  "TracingServerAddr": "127.0.0.1:25625",
+  "Secret": "",
+  "TracingIdentity": "coord"
+}

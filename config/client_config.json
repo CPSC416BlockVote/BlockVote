@@ -1,0 +1,7 @@
+{
+  "ClientID": "client1",
+  "CoordIPPort": "127.0.0.1:22745",
+  "TracingServerAddr": "127.0.0.1:25625",
+  "Secret": "",
+  "TracingIdentity": "client1"
+}
