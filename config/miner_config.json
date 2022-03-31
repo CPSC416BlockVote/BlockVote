@@ -1,5 +1,5 @@
 {
-  "MinerID": 1,
+  "MinerID": "miner1",
   "CoordAddr": "127.0.0.1:22746",
   "MinerAddr": "127.0.0.1:27201",
   "TracingServerAddr": "127.0.0.1:25625",
