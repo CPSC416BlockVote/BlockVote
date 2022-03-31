@@ -15,17 +15,16 @@ func (db *Database) Opened() bool {
 }
 
 func (db *Database) KeyExist(key []byte) (found bool) {
-	_ = db.instance.View(func(txn *badger.Txn) error {
+	err := db.instance.View(func(txn *badger.Txn) error {
 		_, err := txn.Get(key)
-		if err == badger.ErrKeyNotFound {
-			found = false
-		} else if err != nil {
-			return err
-		}
-		found = true
-		return nil
+		return err
 	})
-	return found
+	if err == badger.ErrKeyNotFound {
+		return false
+	} else if err != nil {
+		panic(err)
+	}
+	return true
 }
 
 func (db *Database) Put(key []byte, value []byte) error {
@@ -140,10 +139,10 @@ func (db *Database) New(dbPath string, inMemory bool) error {
 			return errors.New("found existing database")
 		}
 
-		opt = badger.DefaultOptions(dbPath)
+		opt = badger.DefaultOptions(dbPath).WithLogger(nil)
 	} else {
 		// disk-less mode
-		opt = badger.DefaultOptions("").WithInMemory(true)
+		opt = badger.DefaultOptions("").WithInMemory(true).WithLogger(nil)
 	}
 	// open database
 	instance, err := badger.Open(opt)
@@ -163,7 +162,7 @@ func (db *Database) Load(dbPath string) error {
 		return errors.New("database not found")
 	}
 	// open database
-	instance, err := badger.Open(badger.DefaultOptions(dbPath))
+	instance, err := badger.Open(badger.DefaultOptions(dbPath).WithLogger(nil))
 	if err != nil {
 		return err
 	}

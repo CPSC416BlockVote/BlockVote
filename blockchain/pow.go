@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/gob"
-	"fmt"
 	"log"
 	"math"
 	"math/big"
@@ -43,8 +42,8 @@ func (pow *ProofOfWork) Run() (uint32, []byte) {
 			nonce++
 		}
 	}
-	fmt.Printf("Nonce: %v\n", nonce)
-	fmt.Printf("Hash: %x\n", hash)
+	//fmt.Printf("Nonce: %v\n", nonce)
+	//fmt.Printf("Hash: %x\n", hash)
 	return nonce, hash[:]
 }
 

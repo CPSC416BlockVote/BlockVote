@@ -26,6 +26,10 @@ type ChainIterator struct {
 
 // ----- BlockChain APIs -----
 
+func NewBlockChain(DB *util.Database) *BlockChain {
+	return &BlockChain{DB: DB}
+}
+
 // Init initializes the blockchain with genesis block. For coord use only.
 func (bc *BlockChain) Init() error {
 	// check key
@@ -111,26 +115,29 @@ func (bc *BlockChain) Get(hash []byte) *Block {
 }
 
 // Put adds a new block to the blockchain
-func (bc *BlockChain) Put(block Block, owned bool) (success bool, switched bool) {
+func (bc *BlockChain) Put(block Block, owned bool) (success bool) {
 	// sanity check
 	if len(block.PrevHash) == 0 || block.BlockNum == 0 || len(block.Hash) == 0 || len(block.MinerID) == 0 {
 		log.Println("[WARN] Block has missing values and will not be added to the chain.")
-		return false, false
+		return false
 	}
 	if !bc.Exist(block.PrevHash) {
 		log.Println("[WARN] Previous block does not exist and the block will not be added to the chain.")
-		return false, false
+		return false
 	}
 	if bc.Exist(block.Hash) {
 		log.Println("[WARN] Block already exists and will not be added to the chain.")
-		return false, false
+		return false
 	}
 
 	// validate
 	if !owned {
 		// TODO: Add block validation code here
 		// validate pow
-
+		pow := NewProof(&block)
+		if !pow.Validate() {
+			return false
+		}
 		// validate txns
 
 	}
@@ -142,32 +149,29 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, switched bool)
 		log.Fatal(err)
 	}
 
-	// check chain length
-	height := bc.Get(bc.LastHash).BlockNum
-	if block.BlockNum > height {
+	// check chain
+	if bytes.Compare(block.PrevHash, bc.LastHash) == 0 {
 		bc.LastHash = block.Hash
-		if bytes.Compare(block.PrevHash, bc.LastHash) == 0 {
-			switched = false
-		} else {
-			switched = true
-		}
-	} else {
-		switched = false
 	}
-	return true, switched
+	return true
 }
 
-// DiffChain compares the difference between two forks
-func (bc *BlockChain) DiffChain(lastHashNew []byte, lastHashOld []byte) (newTxns []*Transaction, oldTxns []*Transaction) {
-	iterNew, iterOld := bc.NewIterator(lastHashNew), bc.NewIterator(lastHashOld)
+// CheckoutFork checks out a different fork and returns any difference between two forks
+func (bc *BlockChain) CheckoutFork(lastHashNew []byte) (newTxns []*Transaction, oldTxns []*Transaction) {
+	if bytes.Compare(lastHashNew, bc.LastHash) == 0 {
+		log.Println("[WARN] Attempting to checkout the same fork")
+		return
+	}
+
+	iterNew, iterOld := bc.NewIterator(lastHashNew), bc.NewIterator(bc.LastHash)
 	var blockHashesNew [][]byte
 	var blockHashesOld [][]byte
 
 	// collect all block hashes
-	for block, end := iterNew.Next(); !end; {
+	for block, end := iterNew.Next(); !end; block, end = iterNew.Next() {
 		blockHashesNew = append([][]byte{block.Hash}, blockHashesNew...)
 	}
-	for block, end := iterOld.Next(); !end; {
+	for block, end := iterOld.Next(); !end; block, end = iterOld.Next() {
 		blockHashesOld = append([][]byte{block.Hash}, blockHashesOld...)
 	}
 
@@ -211,7 +215,7 @@ func (bc *BlockChain) TxnStatus(txid []byte) int {
 	// get an iterator for the longest chain
 	iter := bc.NewIterator(bc.LastHash)
 	res := -1
-	for block, end := iter.Next(); !end; {
+	for block, end := iter.Next(); !end; block, end = iter.Next() {
 		for _, txn := range block.Txns {
 			if bytes.Compare(txn.TXID, txid) == 0 {
 				res = iter.Index
@@ -232,7 +236,7 @@ func (iter *ChainIterator) Next() (block *Block, end bool) {
 	block = iter.BlockChain.Get(iter.CurrentHash)
 	iter.CurrentHash = block.PrevHash
 	iter.Index++
-	return block, block.BlockNum != 0
+	return block, block.BlockNum == 0
 }
 
 func (iter *ChainIterator) Reset() {

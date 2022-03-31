@@ -21,11 +21,13 @@ type Block struct {
 func (b *Block) Genesis() {
 	b.PrevHash = []byte{}
 	b.BlockNum = 0
-	b.Nonce = 0
 	b.Txns = []*Transaction{}
 	b.MinerID = "Coord"
-	// TODO: get hash from POW
-	b.Hash = []byte{}
+	// get nonce and hash from POW
+	pow := NewProof(b)
+	nonce, hash := pow.Run()
+	b.Nonce = nonce
+	b.Hash = hash
 }
 
 // Encode encodes current block instance into bytes
