@@ -1,6 +1,7 @@
 package blockvote
 
 import (
+	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
@@ -21,14 +22,13 @@ type CoordConfig struct {
 // messages
 
 type RegisterArgs struct {
-	CoordListenAddr  string
-	MinerMinerAddr   string
-	ClientListenAddr string
+	Info MinerInfo
 }
 
 type RegisterReply struct {
 	BlockChain [][]byte
 	LastHash   []byte
+	Candidates []Identity.Wallets
 }
 
 type GetPeerListArgs struct {
@@ -36,6 +36,13 @@ type GetPeerListArgs struct {
 
 type GetPeerListReply struct {
 	PeerAddrList []string
+}
+
+type GetCandidatesArgs struct {
+}
+
+type GetCandidatesReply struct {
+	Candidates []Identity.Wallet
 }
 
 type GetMinerListArgs struct {
@@ -50,12 +57,15 @@ type QueryTxnArgs struct {
 }
 
 type QueryTxnReply struct {
+	NumConfirmed int
 }
 
 type Coord struct {
 	// Coord state may go here
 	Storage    *util.Database
 	Blockchain *blockchain.BlockChain
+
+	Candidates []Identity.Wallets
 }
 
 func NewCoord() *Coord {
@@ -171,6 +181,10 @@ func (api *CoordAPIMiner) GetPeerList(args GetPeerListArgs, reply *GetPeerListRe
 
 type CoordAPIClient struct {
 	c *Coord
+}
+
+func (api *CoordAPIClient) GetCandidates(args GetCandidatesArgs, reply *GetCandidatesReply) error {
+	return nil
 }
 
 func (api *CoordAPIClient) GetMinerList(args GetMinerListArgs, reply *GetMinerListReply) error {

@@ -132,14 +132,17 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool) {
 
 	// validate
 	if !owned {
-		// TODO: Add block validation code here
 		// validate pow
 		pow := NewProof(&block)
 		if !pow.Validate() {
 			return false
 		}
 		// validate txns
-
+		for _, txn := range block.Txns {
+			if !bc.ValidateTxn(txn) {
+				return false
+			}
+		}
 	}
 
 	// save to db
@@ -208,6 +211,16 @@ func (bc *BlockChain) NewIterator(hash []byte) *ChainIterator {
 		Index:       -1,
 		BlockChain:  bc,
 	}
+}
+
+func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
+	// verify signature
+	if !txn.Verify() {
+		return false
+	}
+	// TODO: validate data
+
+	return true
 }
 
 // TxnStatus returns the number of blocks that confirm the given txn. -1 indicates txn not found

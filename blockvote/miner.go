@@ -1,6 +1,7 @@
 package blockvote
 
 import (
+	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
@@ -18,6 +19,12 @@ type MinerConfig struct {
 	Difficulty        uint8
 	Secret            []byte
 	TracingIdentity   string
+}
+
+type MinerInfo struct {
+	CoordListenAddr  string
+	MinerMinerAddr   string
+	ClientListenAddr string
 }
 
 // messages
@@ -48,9 +55,10 @@ type Miner struct {
 	Storage    *util.Database
 	Blockchain *blockchain.BlockChain
 
-	CoordListenAddr  string
-	MinerMinerAddr   string
-	ClientListenAddr string
+	Info MinerInfo
+
+	Candidates []Identity.Wallets
+	MemoryPool TxnPool
 }
 
 func NewMiner() *Miner {
@@ -108,8 +116,8 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	if err != nil {
 		return errors.New("cannot start API service for coord")
 	}
-	m.CoordListenAddr = coordListenAddr
-	log.Println("[INFO] Listen to coord's API requests at", m.CoordListenAddr)
+	m.Info.CoordListenAddr = coordListenAddr
+	log.Println("[INFO] Listen to coord's API requests at", m.Info.CoordListenAddr)
 
 	// >> client
 	minerAPIClient := new(MinerAPIClient)
@@ -118,8 +126,8 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	if err != nil {
 		return errors.New("cannot start API service for client")
 	}
-	m.ClientListenAddr = clientListenAddr
-	log.Println("[INFO] Listen to clients' API requests at", m.ClientListenAddr)
+	m.Info.ClientListenAddr = clientListenAddr
+	log.Println("[INFO] Listen to clients' API requests at", m.Info.ClientListenAddr)
 
 	// >> miner
 	minerAPIMiner := new(MinerAPIMiner)
@@ -128,8 +136,8 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	if err != nil {
 		return errors.New("cannot start API service for miner")
 	}
-	m.MinerMinerAddr = minerMinerAddr
-	log.Println("[INFO] Listen to miners' API requests at", m.MinerMinerAddr)
+	m.Info.MinerMinerAddr = minerMinerAddr
+	log.Println("[INFO] Listen to miners' API requests at", m.Info.MinerMinerAddr)
 
 	return errors.New("not implemented")
 }
