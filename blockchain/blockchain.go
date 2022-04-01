@@ -2,9 +2,7 @@ package blockchain
 
 import (
 	"bytes"
-	"crypto/ecdsa"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
-	"encoding/hex"
 	"errors"
 	"log"
 	"math"
@@ -251,115 +249,4 @@ func (iter *ChainIterator) Reset() {
 // DBKeyForBlock returns the database key for a given block hash by concatenating prefix and hash.
 func DBKeyForBlock(blockHash []byte) []byte {
 	return bytes.Join([][]byte{[]byte(BlockKeyPrefix), blockHash}, []byte{})
-}
-
-// TODO: need to merge below function for transaction use
-func (bc *BlockChain) FindTransaction(ID []byte) (Transaction, error) {
-
-	iter := bc.NewIterator(bc.LastHash)
-
-	for {
-		block, _ := iter.Next()
-
-		for _, tx := range block.Txns {
-			if bytes.Compare(tx.ID, ID) == 0 {
-				return *tx, nil
-			}
-		}
-
-		if len(block.PrevHash) == 0 {
-			break
-		}
-	}
-
-	return Transaction{}, errors.New("Transaction does not exist")
-}
-
-func (bc *BlockChain) SignTransaction(tx *Transaction, privKey ecdsa.PrivateKey) {
-	prevTXs := make(map[string]Transaction)
-
-	for _, in := range tx.Inputs {
-		prevTX, err := bc.FindTransaction(in.ID)
-		if err != nil {
-			log.Panic(err)
-		}
-		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
-	}
-
-	tx.Sign(privKey, prevTXs)
-}
-
-func (bc *BlockChain) VerifyTransaction(tx *Transaction) bool {
-	prevTXs := make(map[string]Transaction)
-
-	for _, in := range tx.Inputs {
-		prevTX, err := bc.FindTransaction(in.ID)
-
-		if err != nil {
-			log.Panic(err)
-		}
-
-		prevTXs[hex.EncodeToString(prevTX.ID)] = prevTX
-	}
-	return tx.Verify(prevTXs)
-
-	return false
-}
-
-func (bc *BlockChain) FindSpendableOutputs(pubKeyHash []byte, amount int) (int, map[string][]int) {
-	unspentOuts := make(map[string][]int)
-	unspentTxs := bc.FindUnspentTransactions(pubKeyHash)
-	accumulated := 0
-
-Work:
-	for _, tx := range unspentTxs {
-		txID := hex.EncodeToString(tx.ID)
-
-		for outIdx, out := range tx.Outputs {
-			if out.IsLockedWithKey(pubKeyHash) && accumulated < amount {
-				accumulated += out.Value
-				unspentOuts[txID] = append(unspentOuts[txID], outIdx)
-
-				if accumulated >= amount {
-					break Work
-				}
-			}
-		}
-	}
-	return accumulated, unspentOuts
-}
-
-func (bc *BlockChain) FindUnspentTransactions(pubKeyHash []byte) []Transaction {
-	var unspentTxs []Transaction
-
-	spentTXOs := make(map[string][]int)
-
-	iter := bc.NewIterator(bc.LastHash)
-
-	for {
-		block, _ := iter.Next()
-
-		for _, tx := range block.Txns {
-			txID := hex.EncodeToString(tx.ID)
-
-		Outputs:
-			for outIdx, out := range tx.Outputs {
-				if spentTXOs[txID] != nil {
-					for _, spentOut := range spentTXOs[txID] {
-						if spentOut == outIdx {
-							continue Outputs
-						}
-					}
-				}
-				if out.IsLockedWithKey(pubKeyHash) {
-					unspentTxs = append(unspentTxs, *tx)
-				}
-			}
-		}
-
-		if len(block.PrevHash) == 0 {
-			break
-		}
-	}
-	return unspentTxs
 }

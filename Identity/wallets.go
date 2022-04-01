@@ -116,7 +116,9 @@ func (ws *Wallets) SaveFile() {
 	if err := encoder.Encode(ws); err != nil {
 		log.Panic(err)
 	}
+
 	if err := ioutil.WriteFile(walletFile, content.Bytes(), 0644); err != nil {
 		log.Panic(err)
 	}
+
 }

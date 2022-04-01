@@ -1,5 +1,7 @@
 package Identity
 
+import "os"
+
 type Voter struct {
 	VoterName string
 	VoterId   string
@@ -20,6 +22,10 @@ func CreateVoter(name string, id string) (*Wallets, error) {
 	}
 
 	err := wallets.LoadFile()
+	if os.IsNotExist(err) {
+		wallets.SaveFile()
+		err = nil
+	}
 	return &wallets, err
 }
 
@@ -31,5 +37,9 @@ func CreateCandidate(name string) (*Wallets, error) {
 	}
 
 	err := wallets.LoadFile()
+	if os.IsNotExist(err) {
+		wallets.SaveFile()
+		err = nil
+	}
 	return &wallets, err
 }
