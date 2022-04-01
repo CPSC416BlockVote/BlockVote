@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/DistributedClocks/tracing"
+	"log"
 	"os"
 )
 
@@ -15,6 +16,40 @@ type CoordConfig struct {
 	TracingServerAddr   string
 	Secret              []byte
 	TracingIdentity     string
+}
+
+// messages
+
+type RegisterArgs struct {
+	CoordListenAddr  string
+	MinerMinerAddr   string
+	ClientListenAddr string
+}
+
+type RegisterReply struct {
+	BlockChain [][]byte
+	LastHash   []byte
+}
+
+type GetPeerListArgs struct {
+}
+
+type GetPeerListReply struct {
+	PeerAddrList []string
+}
+
+type GetMinerListArgs struct {
+}
+
+type GetMinerListReply struct {
+	MinerAddrList []string
+}
+
+type QueryTxnArgs struct {
+	txn blockchain.Transaction
+}
+
+type QueryTxnReply struct {
 }
 
 type Coord struct {
@@ -96,5 +131,52 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, ctr
 		fmt.Println()
 	}
 
+	// Starting API services
+	// >> miner
+	coordAPIMiner := new(CoordAPIMiner)
+	coordAPIMiner.c = c
+	err = util.NewRPCServerWithIpPort(coordAPIMiner, minerAPIListenAddr)
+	if err != nil {
+		return errors.New("cannot start API service for miner")
+	}
+	log.Println("[INFO] Listen to miners' API requests at", minerAPIListenAddr)
+
+	// >> client
+	coordAPIClient := new(CoordAPIClient)
+	coordAPIClient.c = c
+	err = util.NewRPCServerWithIpPort(coordAPIClient, clientAPIListenAddr)
+	if err != nil {
+		return errors.New("cannot start API service for client")
+	}
+	log.Println("[INFO] Listen to clients' API requests at", clientAPIListenAddr)
+
 	return errors.New("not implemented")
+}
+
+// ----- APIs for miner -----
+
+type CoordAPIMiner struct {
+	c *Coord
+}
+
+func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) error {
+	return nil
+}
+
+func (api *CoordAPIMiner) GetPeerList(args GetPeerListArgs, reply *GetPeerListReply) error {
+	return nil
+}
+
+// ----- APIs for client -----
+
+type CoordAPIClient struct {
+	c *Coord
+}
+
+func (api *CoordAPIClient) GetMinerList(args GetMinerListArgs, reply *GetMinerListReply) error {
+	return nil
+}
+
+func (api *CoordAPIClient) QueryTxn(args QueryTxnArgs, reply *QueryTxnReply) error {
+	return nil
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/DistributedClocks/tracing"
+	"log"
+	"strings"
 )
 
 type MinerConfig struct {
@@ -18,16 +20,46 @@ type MinerConfig struct {
 	TracingIdentity   string
 }
 
+// messages
+
+type NotifyPeerListArgs struct {
+}
+
+type NotifyPeerListReply struct {
+}
+
+type GetBlockArgs struct {
+	Hash []byte
+}
+
+type GetBlockReply struct {
+	block blockchain.Block
+}
+
+type SubmitTxnArgs struct {
+	txn blockchain.Transaction
+}
+
+type SubmitTxnReply struct {
+}
+
 type Miner struct {
 	// Miner state may go here
 	Storage    *util.Database
 	Blockchain *blockchain.BlockChain
+
+	CoordListenAddr  string
+	MinerMinerAddr   string
+	ClientListenAddr string
 }
 
 func NewMiner() *Miner {
 	return &Miner{
 		Storage: &util.Database{},
 	}
+}
+
+type TxnPool struct {
 }
 
 func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, difficulty uint8, mtrace *tracing.Tracer) error {
@@ -67,5 +99,67 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 		fmt.Println()
 	}
 
+	// starting API services
+	minerIP := minerAddr[0:strings.Index(minerAddr, ":")]
+	// >> coord
+	minerAPICoord := new(MinerAPICoord)
+	minerAPICoord.m = m
+	coordListenAddr, err := util.NewRPCServerWithIp(minerAPICoord, minerIP)
+	if err != nil {
+		return errors.New("cannot start API service for coord")
+	}
+	m.CoordListenAddr = coordListenAddr
+	log.Println("[INFO] Listen to coord's API requests at", m.CoordListenAddr)
+
+	// >> client
+	minerAPIClient := new(MinerAPIClient)
+	minerAPIClient.m = m
+	clientListenAddr, err := util.NewRPCServerWithIp(minerAPIClient, minerIP)
+	if err != nil {
+		return errors.New("cannot start API service for client")
+	}
+	m.ClientListenAddr = clientListenAddr
+	log.Println("[INFO] Listen to clients' API requests at", m.ClientListenAddr)
+
+	// >> miner
+	minerAPIMiner := new(MinerAPIMiner)
+	minerAPIMiner.m = m
+	minerMinerAddr, err := util.NewRPCServerWithIp(minerAPIMiner, minerIP)
+	if err != nil {
+		return errors.New("cannot start API service for miner")
+	}
+	m.MinerMinerAddr = minerMinerAddr
+	log.Println("[INFO] Listen to miners' API requests at", m.MinerMinerAddr)
+
 	return errors.New("not implemented")
+}
+
+// ----- APIs for coord -----
+
+type MinerAPICoord struct {
+	m *Miner
+}
+
+func (api *MinerAPICoord) NotifyPeerList(args NotifyPeerListArgs, reply *NotifyPeerListReply) error {
+	return nil
+}
+
+// ----- APIs for miner -----
+
+type MinerAPIMiner struct {
+	m *Miner
+}
+
+func (api *MinerAPIMiner) GetBlock(args GetBlockArgs, reply *GetBlockReply) error {
+	return nil
+}
+
+// ----- APIs for client
+
+type MinerAPIClient struct {
+	m *Miner
+}
+
+func (api *MinerAPIClient) SubmitTxn(args SubmitTxnArgs, reply *SubmitTxnReply) error {
+	return nil
 }
