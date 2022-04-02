@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"math"
+	"sync"
 )
 
 var LastHashKey = []byte("LastHash")
@@ -13,6 +14,7 @@ var LastHashKey = []byte("LastHash")
 const BlockKeyPrefix = "block-"
 
 type BlockChain struct {
+	mu       sync.Mutex
 	LastHash []byte
 	DB       *util.Database
 }
@@ -89,6 +91,10 @@ func (bc *BlockChain) ResumeFromEncodedData(blocks [][]byte, lastHash []byte) er
 
 // Encode encodes all the blocks in the blockchain into a 2D byte array.
 func (bc *BlockChain) Encode() ([][]byte, []byte) {
+	// lock to ensure block data and last hash consistency
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
 	blocks, err := bc.DB.GetAllWithPrefix(BlockKeyPrefix)
 	if err != nil {
 		log.Println("[ERROR] Unable to fetch all block data from database:")
@@ -116,6 +122,9 @@ func (bc *BlockChain) Get(hash []byte) *Block {
 
 // Put adds a new block to the blockchain
 func (bc *BlockChain) Put(block Block, owned bool) (success bool) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
 	// sanity check
 	if len(block.PrevHash) == 0 || block.BlockNum == 0 || len(block.Hash) == 0 || len(block.MinerID) == 0 {
 		log.Println("[WARN] Block has missing values and will not be added to the chain.")
@@ -161,6 +170,9 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool) {
 
 // CheckoutFork checks out a different fork and returns any difference between two forks
 func (bc *BlockChain) CheckoutFork(lastHashNew []byte) (newTxns []*Transaction, oldTxns []*Transaction) {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
 	if bytes.Compare(lastHashNew, bc.LastHash) == 0 {
 		log.Println("[WARN] Attempting to checkout the same fork")
 		return

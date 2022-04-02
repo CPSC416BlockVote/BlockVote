@@ -21,7 +21,7 @@ func ReadJSONConfig(filename string, config interface{}) error {
 
 func CheckErr(err error, errfmsg string, fargs ...interface{}) {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, errfmsg, fargs...)
+		fmt.Fprintf(os.Stderr, errfmsg+": "+err.Error(), fargs...)
 		os.Exit(1)
 	}
 }

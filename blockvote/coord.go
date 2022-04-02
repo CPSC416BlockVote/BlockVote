@@ -5,10 +5,12 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
-	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 )
 
 type CoordConfig struct {
@@ -19,46 +21,46 @@ type CoordConfig struct {
 	TracingIdentity     string
 }
 
+type NodeInfo struct {
+	Property MinerInfo
+}
+
 // messages
 
-type RegisterArgs struct {
-	Info MinerInfo
-}
+type (
+	RegisterArgs struct {
+		Info MinerInfo
+	}
 
-type RegisterReply struct {
-	BlockChain [][]byte
-	LastHash   []byte
-	Candidates []Identity.Wallets
-}
+	RegisterReply struct {
+		BlockChain   [][]byte
+		LastHash     []byte
+		Candidates   []Identity.Wallets
+		PeerAddrList []string
+	}
 
-type GetPeerListArgs struct {
-}
+	GetCandidatesArgs struct {
+	}
 
-type GetPeerListReply struct {
-	PeerAddrList []string
-}
+	GetCandidatesReply struct {
+		Candidates []Identity.Wallets
+	}
 
-type GetCandidatesArgs struct {
-}
+	GetMinerListArgs struct {
+	}
 
-type GetCandidatesReply struct {
-	Candidates []Identity.Wallet
-}
+	GetMinerListReply struct {
+		MinerAddrList []string
+	}
 
-type GetMinerListArgs struct {
-}
+	QueryTxnArgs struct {
+		TxID []byte
+	}
 
-type GetMinerListReply struct {
-	MinerAddrList []string
-}
-
-type QueryTxnArgs struct {
-	txn blockchain.Transaction
-}
-
-type QueryTxnReply struct {
-	NumConfirmed int
-}
+	QueryTxnReply struct {
+		NumConfirmed int
+	}
+)
 
 type Coord struct {
 	// Coord state may go here
@@ -66,6 +68,9 @@ type Coord struct {
 	Blockchain *blockchain.BlockChain
 
 	Candidates []Identity.Wallets
+
+	nlMu     sync.Mutex
+	NodeList []NodeInfo
 }
 
 func NewCoord() *Coord {
@@ -75,73 +80,21 @@ func NewCoord() *Coord {
 }
 
 func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, ctrace *tracing.Tracer) error {
+	// 1. Initialization
+	// 1.1 Storage(DB)
 	if _, err := os.Stat("./storage/coord"); err == nil {
 		os.RemoveAll("./storage/coord")
 	}
 	err := c.Storage.New("./storage/coord", false)
-	if err != nil {
-		util.CheckErr(err, "error when creating databse")
-	}
+	util.CheckErr(err, "[ERROR] error when creating database")
 	defer c.Storage.Close()
-
-	// coord can initialize the blockchain with genesis block
+	// 1.2 Blockchain
 	c.Blockchain = blockchain.NewBlockChain(c.Storage)
 	err = c.Blockchain.Init()
-	if err != nil {
-		fmt.Println(err)
-		util.CheckErr(err, "error when initializing blockchain")
-	}
+	util.CheckErr(err, "[ERROR] error when initializing blockchain")
+	// TODO: 1.3 Candidates
 
-	genesis := c.Blockchain.Get(c.Blockchain.LastHash)
-	fmt.Println("Genesis Block:")
-	fmt.Printf("PrevHash: %x\n", genesis.PrevHash)
-	fmt.Printf("BlockNum: %d\n", genesis.BlockNum)
-	fmt.Printf("Nonce: %d\n", genesis.Nonce)
-	fmt.Println("Txns:", genesis.Txns)
-	fmt.Printf("MinerID: %s\n", genesis.MinerID)
-	fmt.Printf("Hash: %x\n", genesis.Hash)
-	fmt.Println()
-
-	fmt.Printf("Blockchain:\n")
-	fmt.Printf("Last Hash: %x\n", c.Blockchain.LastHash)
-	fmt.Println()
-
-	// coord can store blocks using database
-	var blockHashes [][]byte
-	for i := 0; i < 10; i++ {
-		block := blockchain.Block{
-			PrevHash: c.Blockchain.LastHash,
-			BlockNum: uint8(i + 1),
-			Nonce:    0,
-			Txns:     []*blockchain.Transaction{},
-			MinerID:  "coord",
-			Hash:     []byte{},
-		}
-		pow := blockchain.NewProof(&block)
-		nonce, hash := pow.Run()
-		block.Nonce = nonce
-		block.Hash = hash
-
-		blockHashes = append(blockHashes, block.Hash)
-		succ := c.Blockchain.Put(block, true)
-		if !succ {
-			panic("Unable to put a new block")
-		}
-	}
-
-	// coord can retrieve blocks from blockchain
-	iterator := c.Blockchain.NewIterator(c.Blockchain.LastHash)
-	for block, end := iterator.Next(); !end; block, end = iterator.Next() {
-		fmt.Printf("PrevHash: %x\n", block.PrevHash)
-		fmt.Printf("BlockNum: %d\n", block.BlockNum)
-		fmt.Printf("Nonce: %d\n", block.Nonce)
-		fmt.Println("Txns:", block.Txns)
-		fmt.Printf("MinerID: %s\n", block.MinerID)
-		fmt.Printf("Hash: %x\n", block.Hash)
-		fmt.Println()
-	}
-
-	// Starting API services
+	// 2. Starting API services
 	// >> miner
 	coordAPIMiner := new(CoordAPIMiner)
 	coordAPIMiner.c = c
@@ -160,7 +113,11 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, ctr
 	}
 	log.Println("[INFO] Listen to clients' API requests at", clientAPIListenAddr)
 
-	return errors.New("not implemented")
+	// Wait for interrupt signal to exit
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	<-sigs
+	return nil
 }
 
 // ----- APIs for miner -----
@@ -169,11 +126,29 @@ type CoordAPIMiner struct {
 	c *Coord
 }
 
+// Register registers a new miner in the system and returns necessary data about the system
 func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) error {
-	return nil
-}
+	api.c.nlMu.Lock()
+	defer api.c.nlMu.Unlock()
 
-func (api *CoordAPIMiner) GetPeerList(args GetPeerListArgs, reply *GetPeerListReply) error {
+	// add to list
+	newNodeInfo := NodeInfo{Property: args.Info}
+	api.c.NodeList = append(api.c.NodeList, newNodeInfo)
+
+	// prepare reply data
+	encodedBlockchain, lastHash := api.c.Blockchain.Encode()
+	var peerAddrList []string
+	for _, info := range api.c.NodeList {
+		peerAddrList = append(peerAddrList, info.Property.MinerMinerAddr)
+	}
+
+	*reply = RegisterReply{
+		BlockChain:   encodedBlockchain,
+		LastHash:     lastHash,
+		Candidates:   api.c.Candidates,
+		PeerAddrList: peerAddrList,
+	}
+
 	return nil
 }
 
@@ -184,13 +159,25 @@ type CoordAPIClient struct {
 }
 
 func (api *CoordAPIClient) GetCandidates(args GetCandidatesArgs, reply *GetCandidatesReply) error {
+	*reply = GetCandidatesReply{Candidates: api.c.Candidates}
 	return nil
 }
 
 func (api *CoordAPIClient) GetMinerList(args GetMinerListArgs, reply *GetMinerListReply) error {
+	api.c.nlMu.Lock()
+	defer api.c.nlMu.Unlock()
+
+	var minerAddrList []string
+	for _, info := range api.c.NodeList {
+		minerAddrList = append(minerAddrList, info.Property.ClientListenAddr)
+	}
+
+	*reply = GetMinerListReply{MinerAddrList: minerAddrList}
 	return nil
 }
 
+// QueryTxn queries a transaction in the system and returns the number of blocks that confirm it.
 func (api *CoordAPIClient) QueryTxn(args QueryTxnArgs, reply *QueryTxnReply) error {
+	*reply = QueryTxnReply{NumConfirmed: api.c.Blockchain.TxnStatus(args.TxID)}
 	return nil
 }
