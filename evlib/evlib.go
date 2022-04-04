@@ -34,6 +34,8 @@ func NewEV() *EV {
 	return &EV{}
 }
 
+// ----- evlib APIs -----
+
 // Start Starts the instance of EV to use for connecting to the system with the given coord's IP:port.
 func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort string, localCoordIPPort string, localMinerIPPort string, N_Receives int) error {
 
@@ -110,11 +112,28 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	return nil
 }
 
+// Vote API provides the functionality of voting
+func (d *EV) Vote() error {
+	return nil
+}
+
+// GetBallotStatus API checks the status of a transaction and returns the number of blocks that confirm it
+func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
+	return -1, nil
+}
+
+// GetCandVotes API retrieve the number of votes a candidate has.
+func (d *EV) GetCandVotes() (uint, error) {
+	return 0, nil
+}
+
 // Stop Stops the EV instance.
 // This call always succeeds.
 func (d *EV) Stop() {
 	return
 }
+
+// ----- evlib utility functions -----
 
 func createBallot() blockChain.Ballot {
 	// enter ballot
