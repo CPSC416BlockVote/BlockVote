@@ -89,21 +89,20 @@ func NewCoord() *Coord {
 }
 
 func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCandidates uint8, ctrace *tracing.Tracer) error {
+	// FIXME: comment out below if statement to test coord restart
+	//if _, err := os.Stat("./storage/coord"); err == nil {
+	//	os.RemoveAll("./storage/coord")
+	//}
+
 	// 1. Initialization
 	// 1.1 Storage(DB)
-	resume := c.PrepareStorage()
+	resume := c.InitStorage()
 	defer c.Storage.Close()
 	// 1.2 Blockchain
-	c.Blockchain = blockchain.NewBlockChain(c.Storage)
-	if !resume {
-		err := c.Blockchain.Init()
-		util.CheckErr(err, "[ERROR] error when initializing blockchain")
-	} else {
-		err := c.Blockchain.ResumeFromDB()
-		util.CheckErr(err, "[ERROR] error when reloading blockchain")
-	}
+	c.InitBlockchain(resume)
 	// 1.3 Candidates
-	c.PrepareCandidates(nCandidates, resume)
+	c.InitCandidates(nCandidates, resume)
+	// TODO: 1.4 NodeList
 
 	// 2. Starting API services
 	// >> miner
@@ -137,34 +136,60 @@ func (c *Coord) Tracker() {
 	}
 }
 
-func (c *Coord) PrepareStorage() (resume bool) {
-	// FIXME: for future implementation, check if coord restarts
+func (c *Coord) InitStorage() (resume bool) {
 	if _, err := os.Stat("./storage/coord"); err == nil {
-		os.RemoveAll("./storage/coord")
+		err := c.Storage.Load("./storage/coord")
+		util.CheckErr(err, "[ERROR] error when reloading database")
+		resume = true
+	} else if os.IsNotExist(err) {
+		err := c.Storage.New("./storage/coord", false)
+		util.CheckErr(err, "[ERROR] error when creating database")
+		resume = false
+	} else {
+		util.CheckErr(err, "[ERROR] OS error")
 	}
-	err := c.Storage.New("./storage/coord", false)
-	util.CheckErr(err, "[ERROR] error when creating database")
-	resume = false
 	return resume
 }
 
-func (c *Coord) PrepareCandidates(nCandidates uint8, resume bool) {
-	// FIXME: for future implementation, reload candidates from database if resume
-	var keys = [][]byte{util.DBKeyWithPrefix(NCandidatesKey, []byte{})}
-	var values = [][]byte{[]byte(strconv.Itoa(int(nCandidates)))}
-
-	for i := 0; i < int(nCandidates); i++ {
-		can, err := Identity.CreateCandidate("CANDIDATE" + strconv.Itoa(i))
-		if err != nil {
-			util.CheckErr(err, "[ERROR] error when initializing candidates")
-		}
-		can.AddWallet()
-		keys = append(keys, util.DBKeyWithPrefix(CandidateKeyPrefix, []byte(strconv.Itoa(i))))
-		values = append(values, can.Encode())
-		c.Candidates = append(c.Candidates, *can)
+func (c *Coord) InitBlockchain(resume bool) {
+	c.Blockchain = blockchain.NewBlockChain(c.Storage)
+	if !resume {
+		err := c.Blockchain.Init()
+		util.CheckErr(err, "[ERROR] error when initializing blockchain")
+	} else {
+		err := c.Blockchain.ResumeFromDB()
+		util.CheckErr(err, "[ERROR] error when reloading blockchain")
 	}
-	err := c.Storage.PutMulti(keys, values)
-	util.CheckErr(err, "[ERROR] error when saving candidates")
+}
+
+func (c *Coord) InitCandidates(nCandidates uint8, resume bool) {
+	if !resume {
+		var keys = [][]byte{util.DBKeyWithPrefix(NCandidatesKey, []byte{})}
+		var values = [][]byte{[]byte(strconv.Itoa(int(nCandidates)))}
+
+		for i := 0; i < int(nCandidates); i++ {
+			can, err := Identity.CreateCandidate("CANDIDATE" + strconv.Itoa(i))
+			if err != nil {
+				util.CheckErr(err, "[ERROR] error when initializing candidates")
+			}
+			can.AddWallet()
+			keys = append(keys, util.DBKeyWithPrefix(CandidateKeyPrefix, []byte(strconv.Itoa(i))))
+			values = append(values, can.Encode())
+			c.Candidates = append(c.Candidates, *can)
+		}
+		err := c.Storage.PutMulti(keys, values)
+		util.CheckErr(err, "[ERROR] error when saving candidates")
+	} else {
+		values, err := c.Storage.GetAllWithPrefix(CandidateKeyPrefix)
+		util.CheckErr(err, "[ERROR] error reloading candidates")
+		for _, val := range values {
+			cand := Identity.DecodeToWallets(val)
+			c.Candidates = append(c.Candidates, *cand)
+		}
+		if int(nCandidates) != len(c.Candidates) {
+			panic("[ERROR] error reloading candidates: expect " + strconv.Itoa(int(nCandidates)) + ", got " + strconv.Itoa(len(c.Candidates)))
+		}
+	}
 }
 
 // ----- APIs for miner -----
