@@ -15,5 +15,5 @@ func main() {
 		Secret:         config.Secret,
 	})
 	coord := blockvote.NewCoord()
-	coord.Start(config.ClientAPIListenAddr, config.MinerAPIListenAddr, ctracer)
+	coord.Start(config.ClientAPIListenAddr, config.MinerAPIListenAddr, config.NCandidates, ctracer)
 }

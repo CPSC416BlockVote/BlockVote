@@ -1,6 +1,7 @@
 package util
 
 import (
+	"bytes"
 	"errors"
 	"github.com/dgraph-io/badger/v3"
 	"os"
@@ -173,4 +174,8 @@ func (db *Database) Load(dbPath string) error {
 func (db *Database) Close() {
 	db.instance.Close()
 	db.instance = nil
+}
+
+func DBKeyWithPrefix(prefix string, key []byte) []byte {
+	return bytes.Join([][]byte{[]byte(prefix), key}, []byte{})
 }

@@ -10,14 +10,21 @@ import (
 	"net/rpc"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
+)
+
+const (
+	NCandidatesKey     = "NCandidates"
+	CandidateKeyPrefix = "cand-"
 )
 
 type CoordConfig struct {
 	ClientAPIListenAddr string
 	MinerAPIListenAddr  string
 	TracingServerAddr   string
+	NCandidates         uint8
 	Secret              []byte
 	TracingIdentity     string
 }
@@ -48,7 +55,6 @@ type (
 	}
 
 	GetMinerListArgs struct {
-		N_Receives int
 	}
 
 	GetMinerListReply struct {
@@ -82,26 +88,28 @@ func NewCoord() *Coord {
 	}
 }
 
-func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, ctrace *tracing.Tracer) error {
+func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCandidates uint8, ctrace *tracing.Tracer) error {
 	// 1. Initialization
 	// 1.1 Storage(DB)
-	if _, err := os.Stat("./storage/coord"); err == nil {
-		os.RemoveAll("./storage/coord")
-	}
-	err := c.Storage.New("./storage/coord", false)
-	util.CheckErr(err, "[ERROR] error when creating database")
+	resume := c.PrepareStorage()
 	defer c.Storage.Close()
 	// 1.2 Blockchain
 	c.Blockchain = blockchain.NewBlockChain(c.Storage)
-	err = c.Blockchain.Init()
-	util.CheckErr(err, "[ERROR] error when initializing blockchain")
-	// TODO: 1.3 Candidates
+	if resume {
+		err := c.Blockchain.Init()
+		util.CheckErr(err, "[ERROR] error when initializing blockchain")
+	} else {
+		err := c.Blockchain.ResumeFromDB()
+		util.CheckErr(err, "[ERROR] error when reloading blockchain")
+	}
+	// 1.3 Candidates
+	c.PrepareCandidates(nCandidates, resume)
 
 	// 2. Starting API services
 	// >> miner
 	coordAPIMiner := new(CoordAPIMiner)
 	coordAPIMiner.c = c
-	err = util.NewRPCServerWithIpPort(coordAPIMiner, minerAPIListenAddr)
+	err := util.NewRPCServerWithIpPort(coordAPIMiner, minerAPIListenAddr)
 	if err != nil {
 		return errors.New("cannot start API service for miner")
 	}
@@ -127,6 +135,36 @@ func (c *Coord) Tracker() {
 	for {
 		select {}
 	}
+}
+
+func (c *Coord) PrepareStorage() (resume bool) {
+	// FIXME: for future implementation, check if coord restarts
+	if _, err := os.Stat("./storage/coord"); err == nil {
+		os.RemoveAll("./storage/coord")
+	}
+	err := c.Storage.New("./storage/coord", false)
+	util.CheckErr(err, "[ERROR] error when creating database")
+	resume = false
+	return resume
+}
+
+func (c *Coord) PrepareCandidates(nCandidates uint8, resume bool) {
+	// FIXME: for future implementation, reload candidates from database if resume
+	var keys = [][]byte{util.DBKeyWithPrefix(NCandidatesKey, []byte{})}
+	var values = [][]byte{[]byte(strconv.Itoa(int(nCandidates)))}
+
+	for i := 0; i < int(nCandidates); i++ {
+		can, err := Identity.CreateCandidate("CANDIDATE" + strconv.Itoa(i))
+		if err != nil {
+			util.CheckErr(err, "[ERROR] error when initializing candidates")
+		}
+		can.AddWallet()
+		keys = append(keys, util.DBKeyWithPrefix(CandidateKeyPrefix, []byte(strconv.Itoa(i))))
+		values = append(values, can.Encode())
+		c.Candidates = append(c.Candidates, *can)
+	}
+	err := c.Storage.PutMulti(keys, values)
+	util.CheckErr(err, "[ERROR] error when saving candidates")
 }
 
 // ----- APIs for miner -----

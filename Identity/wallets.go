@@ -122,3 +122,13 @@ func (ws *Wallets) SaveFile() {
 	}
 
 }
+
+func (ws *Wallets) Encode() []byte {
+	var buf bytes.Buffer
+	gob.Register(elliptic.P256())
+	err := gob.NewEncoder(&buf).Encode(ws)
+	if err != nil {
+		log.Println("[WARN] wallet encode error")
+	}
+	return buf.Bytes()
+}
