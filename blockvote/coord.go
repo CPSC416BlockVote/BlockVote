@@ -48,6 +48,7 @@ type (
 	}
 
 	GetMinerListArgs struct {
+		N_Receives int
 	}
 
 	GetMinerListReply struct {

@@ -19,7 +19,7 @@ func main() {
 	})
 
 	client := evlib.NewEV()
-	err = client.Start(tracer, config.ClientID, config.CoordIPPort)
+	err = client.Start(tracer, config.ClientID, config.CoordIPPort, config.LocalCoordIPPort, config.LocalMinerIPPort, config.N_Receives)
 	util.CheckErr(err, "Error reading client config: %v\n", err)
 
 	// Add client operations here

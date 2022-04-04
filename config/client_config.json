@@ -1,7 +1,10 @@
 {
   "ClientID": "client1",
   "CoordIPPort": "127.0.0.1:22745",
+  "LocalCoordIPPort": "127.0.0.1:12745",
+  "LocalMinerIPPort": "127.0.0.1:32745",
   "TracingServerAddr": "127.0.0.1:25625",
+  "N_Receives": 5,
   "Secret": "",
   "TracingIdentity": "client1"
 }
