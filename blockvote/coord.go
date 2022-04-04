@@ -7,6 +7,7 @@ import (
 	"errors"
 	"github.com/DistributedClocks/tracing"
 	"log"
+	"net/rpc"
 	"os"
 	"os/signal"
 	"sync"
@@ -69,8 +70,9 @@ type Coord struct {
 
 	Candidates []Identity.Wallets
 
-	nlMu     sync.Mutex
-	NodeList []NodeInfo
+	nlMu       sync.Mutex // lock NodeList & MinerConns
+	NodeList   []NodeInfo
+	MinerConns []*rpc.Client
 }
 
 func NewCoord() *Coord {
@@ -120,6 +122,12 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, ctr
 	return nil
 }
 
+func (c *Coord) Tracker() {
+	for {
+		select {}
+	}
+}
+
 // ----- APIs for miner -----
 
 type CoordAPIMiner struct {
@@ -134,6 +142,20 @@ func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) erro
 	// add to list
 	newNodeInfo := NodeInfo{Property: args.Info}
 	api.c.NodeList = append(api.c.NodeList, newNodeInfo)
+	for _, minerConn := range api.c.MinerConns {
+		if minerConn != nil {
+			reply := NotifyPeerListReply{}
+			// TODO: notifies existing miners of the new miner
+			go minerConn.Call("MinerAPICoord.NotifyPeerList", NotifyPeerListArgs{}, &reply)
+		}
+	}
+	// add rpc connection
+	minerConn, err := rpc.Dial("tcp", newNodeInfo.Property.CoordListenAddr)
+	if err != nil {
+		// silently digest error
+		log.Println("[WARN] cannot connect to miner at", newNodeInfo.Property.CoordListenAddr)
+	}
+	api.c.MinerConns = append(api.c.MinerConns, minerConn)
 
 	// prepare reply data
 	encodedBlockchain, lastHash := api.c.Blockchain.Encode()
