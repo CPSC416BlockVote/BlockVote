@@ -44,7 +44,7 @@ type GetBlockReply struct {
 }
 
 type SubmitTxnArgs struct {
-	txn blockchain.Transaction
+	Txn blockchain.Transaction
 }
 
 type SubmitTxnReply struct {

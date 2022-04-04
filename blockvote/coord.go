@@ -51,7 +51,7 @@ type (
 	}
 
 	GetCandidatesReply struct {
-		Candidates []Identity.Wallets
+		Candidates [][]byte
 	}
 
 	GetMinerListArgs struct {
@@ -95,7 +95,7 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	defer c.Storage.Close()
 	// 1.2 Blockchain
 	c.Blockchain = blockchain.NewBlockChain(c.Storage)
-	if resume {
+	if !resume {
 		err := c.Blockchain.Init()
 		util.CheckErr(err, "[ERROR] error when initializing blockchain")
 	} else {
@@ -220,7 +220,11 @@ type CoordAPIClient struct {
 }
 
 func (api *CoordAPIClient) GetCandidates(args GetCandidatesArgs, reply *GetCandidatesReply) error {
-	*reply = GetCandidatesReply{Candidates: api.c.Candidates}
+	var candidates [][]byte
+	for _, cand := range api.c.Candidates {
+		candidates = append(candidates, cand.Encode())
+	}
+	*reply = GetCandidatesReply{Candidates: candidates}
 	return nil
 }
 

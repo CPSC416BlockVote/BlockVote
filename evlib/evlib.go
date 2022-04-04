@@ -2,9 +2,9 @@ package evlib
 
 import (
 	"bufio"
-	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	wallet "cs.ubc.ca/cpsc416/BlockVote/Identity"
 	blockChain "cs.ubc.ca/cpsc416/BlockVote/blockchain"
+	"cs.ubc.ca/cpsc416/BlockVote/blockvote"
 	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
@@ -14,32 +14,6 @@ import (
 	"os"
 	"time"
 )
-
-type (
-	GetCandidatesArgs struct {
-	}
-
-	GetCandidatesReply struct {
-		Candidates []Identity.Wallets
-	}
-
-	GetMinerListArgs struct {
-		N_Receives int
-	}
-
-	GetMinerListReply struct {
-		MinerAddrList []string
-	}
-
-	SubmitTxnArgs struct {
-		txn blockChain.Transaction
-	}
-
-	SubmitTxnReply struct {
-	}
-)
-
-var candiates = [2]string{"A", "B"}
 
 type EV struct {
 	// Add EV instance state here.
@@ -91,18 +65,19 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	d.localMinerListenerAddr = lmAddr
 
 	// get candidates from Coord
-	var candidatesReply *GetCandidatesReply
-	err = d.coordClient.Call("CoordAPIClient.GetCandidates", GetCandidatesArgs{}, &candidatesReply)
+	var candidatesReply *blockvote.GetCandidatesReply
+	err = d.coordClient.Call("CoordAPIClient.GetCandidates", blockvote.GetCandidatesArgs{}, &candidatesReply)
 	if err != nil {
 		return err
 	}
 
 	// print all candidates Name
 	canadiateName := make([]string, 0)
-	for _, wallet := range candidatesReply.Candidates {
-		canadiateName = append(canadiateName, wallet.CandidateData.CandidateName)
+	for _, cand := range candidatesReply.Candidates {
+		wallets := wallet.DecodeToWallets(cand)
+		canadiateName = append(canadiateName, wallets.CandidateData.CandidateName)
 	}
-	fmt.Println("List of canadiate:", canadiateName)
+	fmt.Println("List of candidate:", canadiateName)
 
 	// create ballot from user info
 	ballot := createBallot()
@@ -114,8 +89,8 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	txn := d.createTransaction(ballot)
 
 	// call coord for list of active miners with length N_Receives
-	var minerListReply *GetMinerListReply
-	err = d.coordClient.Call("CoordAPIClient.GetMinerList", GetMinerListArgs{N_Receives}, &minerListReply)
+	var minerListReply *blockvote.GetMinerListReply
+	err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
 	if err != nil {
 		return err
 	}
@@ -126,8 +101,8 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 
 	// setup conn to miner
 	d.connMinerAddr(minerIPPort)
-	var submitTxnReply *SubmitTxnReply
-	err = d.coordClient.Call("MinerAPIClient.SubmitTxn", SubmitTxnArgs{txn}, &submitTxnReply)
+	var submitTxnReply *blockvote.SubmitTxnReply
+	err = d.coordClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
 	if err != nil {
 		return err
 	}

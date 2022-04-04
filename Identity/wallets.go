@@ -123,12 +123,25 @@ func (ws *Wallets) SaveFile() {
 
 }
 
+// Encode encodes wallets to byte array
 func (ws *Wallets) Encode() []byte {
 	var buf bytes.Buffer
 	gob.Register(elliptic.P256())
 	err := gob.NewEncoder(&buf).Encode(ws)
 	if err != nil {
-		log.Println("[WARN] wallet encode error")
+		log.Println("[WARN] wallets encode error")
 	}
 	return buf.Bytes()
+}
+
+// DecodeToWallets decodes byte array to wallets
+func DecodeToWallets(data []byte) *Wallets {
+	wallets := Wallets{}
+	gob.Register(elliptic.P256())
+	err := gob.NewDecoder(bytes.NewReader(data)).Decode(&wallets)
+	if err != nil {
+		log.Println("[ERROR] wallets decode error")
+		log.Fatal(err)
+	}
+	return &wallets
 }
