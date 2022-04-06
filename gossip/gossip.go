@@ -3,6 +3,7 @@ package gossip
 import (
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
+	"fmt"
 	"log"
 	"math/rand"
 	"net/rpc"
@@ -67,8 +68,8 @@ var (
 
 	PendingPushQueue chan PendingPush // pending updates (from the client or peers) that need to be pushed
 
-	mu        sync.Mutex
-	UpdateMap map[string]Update // stores every update
+	rw        sync.RWMutex
+	UpdateMap map[string]Update // stores every update // FIXME: concurrent map read and map write
 	UpdateLog []string          // update id history
 	FanOut    uint8             // number of connections
 	PeerList  []string          // peer addresses
@@ -136,6 +137,8 @@ func Start(fanOut uint8, // number of connections
 }
 
 func SetPeers(peers []string) {
+	rw.Lock()
+	defer rw.Unlock()
 	// find self
 	i := 0
 	for ; i < len(peers); i++ {
@@ -149,9 +152,17 @@ func SetPeers(peers []string) {
 	}
 }
 
+func AddPeer(peer string) {
+	rw.Lock()
+	defer rw.Unlock()
+	if peer != localListenAddr {
+		PeerList = append(PeerList, peer)
+	}
+}
+
 func NewUpdate(prefix string, hash []byte, data []byte) Update {
 	return Update{
-		ID:   prefix + string(hash),
+		ID:   prefix + fmt.Sprintf("%x", hash),
 		Data: data,
 	}
 }
@@ -159,16 +170,18 @@ func NewUpdate(prefix string, hash []byte, data []byte) Update {
 func (handler *RPCHandler) Push(args PushArgs, reply *PushReply) error {
 	// check missing updates
 	var missing []string
+	rw.RLock()
 	for _, id := range args.UpdateLog {
 		if len(UpdateMap[id].ID) == 0 && id != args.Update.ID {
 			// never see this update, and update is not the latest one
 			missing = append(missing, id)
 		}
 	}
+	rw.RUnlock()
 
 	// only accept the update if no earlier updates are missing
 	if len(missing) == 0 {
-		mu.Lock()
+		rw.Lock()
 		if len(UpdateMap[args.Update.ID].ID) == 0 {
 			UpdateMap[args.Update.ID] = args.Update
 			UpdateLog = append(UpdateLog, args.Update.ID)
@@ -180,7 +193,7 @@ func (handler *RPCHandler) Push(args PushArgs, reply *PushReply) error {
 				UpdateLog: UpdateLog,
 			}
 		}
-		mu.Unlock()
+		rw.Unlock()
 	} else {
 		missing = append(missing, args.Update.ID)
 	}
@@ -195,16 +208,18 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 	// 1. Push
 	// check missing updates
 	var missing []string
+	rw.RLock()
 	for _, id := range args.UpdateLog {
 		if len(UpdateMap[id].ID) == 0 && id != args.Update.ID {
 			// never see this update, and update is not the latest one
 			missing = append(missing, id)
 		}
 	}
+	rw.RUnlock()
 
 	// only accept the update if no earlier updates are missing
 	if len(missing) == 0 {
-		mu.Lock()
+		rw.Lock()
 		if len(UpdateMap[args.Update.ID].ID) == 0 {
 			UpdateMap[args.Update.ID] = args.Update
 			UpdateLog = append(UpdateLog, args.Update.ID)
@@ -216,14 +231,16 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 				UpdateLog: UpdateLog,
 			}
 		}
-		mu.Unlock()
+		rw.Unlock()
 	} else {
 		missing = append(missing, args.Update.ID)
 	}
 
 	// 2. Pull
 	// check what updates peer is missing
+	rw.RLock()
 	localLog := UpdateLog[:]
+	rw.RUnlock()
 	peerMap := make(map[string]bool)
 	for _, id := range args.UpdateLog {
 		peerMap[id] = true
@@ -241,7 +258,9 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 
 func (handler *RPCHandler) Pull(args PullArgs, reply *PullReply) error {
 	// check what updates peer is missing
+	rw.RLock()
 	localLog := UpdateLog[:]
+	rw.RUnlock()
 	peerMap := make(map[string]bool)
 	for _, id := range args.UpdateLog {
 		peerMap[id] = true
@@ -259,8 +278,8 @@ func (handler *RPCHandler) Pull(args PullArgs, reply *PullReply) error {
 
 // Retransmit should follow a Push or PushPull.
 func (handler *RPCHandler) Retransmit(args RetransmitArgs, reply *RetransmitReply) error {
-	mu.Lock()
-	defer mu.Unlock()
+	rw.Lock()
+	defer rw.Unlock()
 	for _, update := range args.Updates {
 		if len(UpdateMap[update.ID].ID) == 0 {
 			UpdateMap[update.ID] = update
@@ -278,7 +297,7 @@ func DigestLocalUpdateService() {
 		case <-ExitSignal:
 			return
 		case update := <-UpdateChan:
-			mu.Lock()
+			rw.Lock()
 			if len(UpdateMap[update.ID].ID) == 0 {
 				UpdateMap[update.ID] = update
 				UpdateLog = append(UpdateLog, update.ID)
@@ -291,7 +310,7 @@ func DigestLocalUpdateService() {
 					}
 				}
 			}
-			mu.Unlock()
+			rw.Unlock()
 		}
 	}
 }
@@ -328,9 +347,11 @@ func PushService() {
 						// check if peer request retransmit
 						if len(reply.MissingUpdates) > 0 {
 							args := RetransmitArgs{Identity: identity}
+							rw.RLock()
 							for _, id := range reply.MissingUpdates {
 								args.Updates = append(args.Updates, UpdateMap[id])
 							}
+							rw.RUnlock()
 							reply := RetransmitReply{}
 							_ = conn.Call("RPCHandler.Retransmit", args, &reply)
 						}
@@ -346,7 +367,7 @@ func PushService() {
 							return
 						}
 						// add pulled updates first
-						mu.Lock()
+						rw.Lock()
 						for _, update := range reply.Updates {
 							if len(UpdateMap[update.ID].ID) == 0 {
 								UpdateMap[update.ID] = update
@@ -355,13 +376,15 @@ func PushService() {
 								QueryChan <- update
 							}
 						}
-						mu.Unlock()
+						rw.Unlock()
 						// then retransmit if requested
 						if len(reply.MissingUpdates) > 0 {
 							args := RetransmitArgs{Identity: identity}
+							rw.RLock()
 							for _, id := range reply.MissingUpdates {
 								args.Updates = append(args.Updates, UpdateMap[id])
 							}
+							rw.RUnlock()
 							reply := RetransmitReply{}
 							_ = conn.Call("RPCHandler.Retransmit", args, &reply)
 						}
@@ -375,6 +398,8 @@ func PushService() {
 func PullService() {
 	replyChan := make(chan []Update, FanOut)
 	for {
+		// timeout for next cycle
+		time.Sleep(time.Duration(5) * time.Second)
 		select {
 		case <-ExitSignal:
 			return
@@ -388,11 +413,14 @@ func PullService() {
 				go func(peerAddr string) {
 					conn, err := rpc.Dial("tcp", peerAddr)
 					if err != nil {
+						Verbose("pull failed (" + peerAddr + ")")
 						replyChan <- []Update{}
 						return
 					}
 					Verbose("pulling... (" + peerAddr + ")")
-					args := PullArgs{Identity: identity, UpdateLog: UpdateLog}
+					rw.RLock()
+					args := PullArgs{Identity: identity, UpdateLog: UpdateLog[:]}
+					rw.RUnlock()
 					reply := PullReply{}
 					err = conn.Call("RPCHandler.Pull", args, &reply)
 					if err != nil {
@@ -406,10 +434,12 @@ func PullService() {
 			}
 
 			// process replies
-			replyCount := 0
-			for replyCount < len(selectedPeers) {
+			for replyCount := 0; replyCount < len(selectedPeers); replyCount++ {
 				updates := <-replyChan
-				mu.Lock()
+				if len(updates) == 0 {
+					continue
+				}
+				rw.Lock()
 				for _, update := range updates {
 					if len(UpdateMap[update.ID].ID) == 0 {
 						UpdateMap[update.ID] = update
@@ -418,17 +448,17 @@ func PullService() {
 						QueryChan <- update
 					}
 				}
-				mu.Unlock()
+				rw.Unlock()
 			}
 			Verbose("pull cycle ended")
-			// timeout for next cycle
-			time.Sleep(time.Duration(5) * time.Second)
 		}
 	}
 }
 
 func SelectPeers() []string {
+	rw.RLock()
 	peers := PeerList[:]
+	rw.RUnlock()
 	var selectedPeers []string
 	if len(peers) == 0 {
 		Verbose("no available peers")

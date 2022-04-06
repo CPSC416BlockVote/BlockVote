@@ -15,7 +15,7 @@ type ProofOfWork struct {
 	Target *big.Int
 }
 
-const NumZeros = 4
+const NumZeros = 20
 
 // NewProof creates a new ProofOfWork structure
 func NewProof(b *Block) *ProofOfWork {

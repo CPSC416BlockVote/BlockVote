@@ -175,7 +175,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	for _, txn := range m.MemoryPool.PendingTxns {
 		existingUpdates = append(existingUpdates, gossip.NewUpdate(TransactionIDPrefix, txn.ID, txn.Serialize()))
 	}
-	_, _, gossipAddr, err := gossip.Start(
+	_, updateChan, gossipAddr, err := gossip.Start(
 		2,
 		"PushPull",
 		minerIP,
@@ -202,7 +202,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	i := 0
 	for {
 		prevHash := m.Blockchain.LastHash
-		if len(m.MemoryPool.PendingTxns) > 0 {
+		if len(m.MemoryPool.PendingTxns) == 0 {
 			// TODO: implement the select
 			fmt.Printf("Block #%d:\n", i+1)
 			block := blockchain.Block{
@@ -218,6 +218,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 			block.Nonce = nonce
 			block.Hash = hash
 			prevHash = hash
+			updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
 
 			fmt.Printf("Nonce: %d\n", block.Nonce)
 			fmt.Printf("Hash: %x\n", block.Hash)
