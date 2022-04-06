@@ -12,7 +12,7 @@ import (
 
 type Wallets struct {
 	UserType      string
-	Wallets       map[string]*Wallet
+	Wallets       map[string]*Wallet // temporally set as a slice for scalability
 	VoterData     Voter
 	CandidateData Candidate
 }
@@ -44,18 +44,26 @@ func (ws Wallets) SerializeDependOnType() []byte {
 func (ws *Wallets) AddWallet() string {
 	wallet := NewWallet()
 	address := fmt.Sprintf("%s", wallet.Address())
+
+	// already have one wallet
+	if len(ws.Wallets) == 1 {
+		return ws.GetAddress()
+	}
 	ws.Wallets[address] = wallet
 	return address
 }
 
-func (ws *Wallets) GetAllAddresses() []string {
+func (ws *Wallets) GetAddress() string {
 	var addresses []string
 
 	for address := range ws.Wallets {
 		addresses = append(addresses, address)
 	}
-
-	return addresses
+	// not added yet
+	if len(addresses) == 0 {
+		return ws.AddWallet()
+	}
+	return addresses[0]
 }
 
 func (ws Wallets) GetWallet(address string) Wallet {
