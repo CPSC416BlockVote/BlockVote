@@ -85,7 +85,7 @@ type Coord struct {
 	Storage    *util.Database
 	Blockchain *blockchain.BlockChain
 
-	Candidates []Identity.Wallets
+	Candidates []*Identity.Wallets
 
 	nlMu       sync.Mutex // lock NodeList & MinerConns
 	NodeList   []NodeInfo
@@ -110,10 +110,10 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	// 1.1 Storage(DB)
 	resume := c.InitStorage()
 	defer c.Storage.Close()
-	// 1.2 Blockchain
-	c.InitBlockchain(resume)
-	// 1.3 Candidates
+	// 1.2 Candidates
 	c.InitCandidates(nCandidates, resume)
+	// 1.3 Blockchain
+	c.InitBlockchain(resume)
 	// TODO: 1.4 NodeList
 
 	// 2. Starting API services
@@ -123,7 +123,7 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 		"Pull",
 		coordIp,
 		//[]string{},
-		[]gossip.Update{gossip.NewUpdate(BlockIDPrefix, c.Blockchain.LastHash, c.Blockchain.Get(c.Blockchain.LastHash).Encode())},
+		[]gossip.Update{gossip.NewUpdate(BlockIDPrefix, c.Blockchain.GetLastHash(), c.Blockchain.Get(c.Blockchain.GetLastHash()).Encode())},
 		"coord",
 		true)
 	if err != nil {
@@ -195,7 +195,7 @@ func (c *Coord) InitStorage() (resume bool) {
 }
 
 func (c *Coord) InitBlockchain(resume bool) {
-	c.Blockchain = blockchain.NewBlockChain(c.Storage)
+	c.Blockchain = blockchain.NewBlockChain(c.Storage, c.Candidates)
 	if !resume {
 		err := c.Blockchain.Init()
 		util.CheckErr(err, "[ERROR] error when initializing blockchain")
@@ -218,7 +218,7 @@ func (c *Coord) InitCandidates(nCandidates uint8, resume bool) {
 			can.AddWallet()
 			keys = append(keys, util.DBKeyWithPrefix(CandidateKeyPrefix, []byte(strconv.Itoa(i))))
 			values = append(values, can.Encode())
-			c.Candidates = append(c.Candidates, *can)
+			c.Candidates = append(c.Candidates, can)
 		}
 		err := c.Storage.PutMulti(keys, values)
 		util.CheckErr(err, "[ERROR] error when saving candidates")
@@ -227,7 +227,7 @@ func (c *Coord) InitCandidates(nCandidates uint8, resume bool) {
 		util.CheckErr(err, "[ERROR] error reloading candidates")
 		for _, val := range values {
 			cand := Identity.DecodeToWallets(val)
-			c.Candidates = append(c.Candidates, *cand)
+			c.Candidates = append(c.Candidates, cand)
 		}
 		if int(nCandidates) != len(c.Candidates) {
 			panic("[ERROR] error reloading candidates: expect " + strconv.Itoa(int(nCandidates)) + ", got " + strconv.Itoa(len(c.Candidates)))

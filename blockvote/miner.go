@@ -146,7 +146,11 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 		m.Candidates = append(m.Candidates, *wallets)
 	}
 	// setup blockchain
-	m.Blockchain = blockchain.NewBlockChain(m.Storage)
+	var candidates []*Identity.Wallets
+	for _, cand := range downloadReply.Candidates {
+		candidates = append(candidates, Identity.DecodeToWallets(cand))
+	}
+	m.Blockchain = blockchain.NewBlockChain(m.Storage, candidates)
 	err = m.Blockchain.ResumeFromEncodedData(downloadReply.BlockChain, downloadReply.LastHash)
 	if err != nil {
 		return errors.New("cannot resume blockchain")

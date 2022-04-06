@@ -2,6 +2,7 @@ package blockchain
 
 import (
 	"bytes"
+	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
 	"log"
@@ -14,9 +15,10 @@ var LastHashKey = []byte("LastHash")
 const BlockKeyPrefix = "block-"
 
 type BlockChain struct {
-	mu       sync.Mutex
-	LastHash []byte
-	DB       *util.Database
+	mu         sync.Mutex
+	LastHash   []byte // should not be accessed without locking (unsafe). should not be accessed directly from outside
+	DB         *util.Database
+	Candidates []*Identity.Wallets
 }
 
 type ChainIterator struct {
@@ -28,8 +30,8 @@ type ChainIterator struct {
 
 // ----- BlockChain APIs -----
 
-func NewBlockChain(DB *util.Database) *BlockChain {
-	return &BlockChain{DB: DB}
+func NewBlockChain(DB *util.Database, candidates []*Identity.Wallets) *BlockChain {
+	return &BlockChain{DB: DB, Candidates: candidates}
 }
 
 // Init initializes the blockchain with genesis block. For coord use only.
@@ -89,6 +91,13 @@ func (bc *BlockChain) ResumeFromEncodedData(blocks [][]byte, lastHash []byte) er
 	return nil
 }
 
+// GetLastHash provides a safe way to read the last hash of the blockchain from outside
+func (bc *BlockChain) GetLastHash() []byte {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc.LastHash[:]
+}
+
 // Encode encodes all the blocks in the blockchain into a 2D byte array.
 func (bc *BlockChain) Encode() ([][]byte, []byte) {
 	// lock to ensure block data and last hash consistency
@@ -100,7 +109,7 @@ func (bc *BlockChain) Encode() ([][]byte, []byte) {
 		log.Println("[ERROR] Unable to fetch all block data from database:")
 		log.Fatal(err)
 	}
-	return blocks, bc.LastHash
+	return blocks, bc.LastHash[:]
 }
 
 // Exist returns if a block exists in the blockchain
@@ -242,19 +251,45 @@ func (bc *BlockChain) NewIterator(hash []byte) *ChainIterator {
 }
 
 func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
-	// verify signature
+	// 1. verify signature
 	if !txn.Verify() {
 		return false
 	}
-	// TODO: validate data
-
+	// 2. validate data
+	validCand := false
+	for _, cand := range bc.Candidates {
+		// 2.1 candidates cannot vote
+		if bytes.Compare(txn.PublicKey, cand.Wallets[cand.GetAddress()].PublicKey) == 0 {
+			return false
+		}
+		// 2.2 voter can only vote for candidates
+		if txn.Data.VoterCandidate == cand.CandidateData.CandidateName {
+			validCand = true
+		}
+	}
+	if !validCand {
+		return false
+	}
+	// 2.3: voter can only vote once
+	bc.mu.Lock()
+	iter := bc.NewIterator(bc.LastHash)
+	bc.mu.Unlock()
+	for block, end := iter.Next(); !end; block, end = iter.Next() {
+		for _, pastTxn := range block.Txns {
+			if bytes.Compare(pastTxn.PublicKey, txn.PublicKey) == 0 {
+				return false
+			}
+		}
+	}
 	return true
 }
 
 // TxnStatus returns the number of blocks that confirm the given txn. -1 indicates txn not found
 func (bc *BlockChain) TxnStatus(txid []byte) int {
 	// get an iterator for the longest chain
+	bc.mu.Lock()
 	iter := bc.NewIterator(bc.LastHash)
+	bc.mu.Unlock()
 	res := -1
 	for block, end := iter.Next(); !end; block, end = iter.Next() {
 		for _, txn := range block.Txns {
