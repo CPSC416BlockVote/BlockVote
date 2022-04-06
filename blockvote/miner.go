@@ -3,6 +3,7 @@ package blockvote
 import (
 	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
+	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
 	"fmt"
@@ -26,11 +27,14 @@ type MinerInfo struct {
 	CoordListenAddr  string
 	MinerMinerAddr   string
 	ClientListenAddr string
+	GossipAddr       string
 }
 
 // messages
 
 type NotifyPeerListArgs struct {
+	PeerAddrList       []string
+	PeerGossipAddrList []string
 }
 
 type NotifyPeerListReply struct {
@@ -91,13 +95,6 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	}
 	defer m.Storage.Close()
 
-	m.Blockchain = blockchain.NewBlockChain(m.Storage)
-	err = m.Blockchain.Init()
-	if err != nil {
-		fmt.Println(err)
-		util.CheckErr(err, "error when initializing blockchain")
-	}
-
 	m.cond = sync.NewCond(&m.mu)
 	m.mu.Lock()
 	// starting API services
@@ -132,19 +129,33 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	m.Info.MinerMinerAddr = minerMinerAddr
 	log.Println("[INFO] Listen to miners' API requests at", m.Info.MinerMinerAddr)
 
-	// started API clients
-	// >> coord
+	// Miner join
 	coordClient, err := util.NewRPCClient(minerAddr, coordAddr)
 	if err != nil {
 		return errors.New("cannot create client for coord")
 	}
-	minerInfo := MinerInfo{clientListenAddr, minerMinerAddr, clientListenAddr}
-	reply := RegisterReply{}
-	coordClient.Call("CoordAPIMiner.Register", RegisterArgs{minerInfo}, &reply)
-	// ASSUME: the returned peer list cannot be empty nor contain the miner itself
+	// download blockchain from coord
+	downloadReply := DownloadReply{}
+	err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
+	if err != nil {
+		return errors.New("cannot download data from coord")
+	}
+	// setup candidates
+	for _, cand := range downloadReply.Candidates {
+		wallets := Identity.DecodeToWallets(cand)
+		m.Candidates = append(m.Candidates, *wallets)
+	}
+	// setup blockchain
+	m.Blockchain = blockchain.NewBlockChain(m.Storage)
+	err = m.Blockchain.ResumeFromEncodedData(downloadReply.BlockChain, downloadReply.LastHash)
+	if err != nil {
+		return errors.New("cannot resume blockchain")
+	}
+	// setup txn pool
+	// ASSUME: the returned peer list cannot contain the miner itself
 	// TODO: loop throught the peer list of just choose one?
-	if len(reply.PeerAddrList) > 0 {
-		toPullMinerAddr := reply.PeerAddrList[0]
+	if len(downloadReply.PeerAddrList) > 0 {
+		toPullMinerAddr := downloadReply.PeerAddrList[0]
 		// get txn pool from the peer
 		// >> miner
 		minerClient, err := util.NewRPCClient(minerAddr, toPullMinerAddr)
@@ -154,11 +165,37 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 		reply := GetTxnPoolReply{}
 		minerClient.Call("MinerAPIMiner.GetTxnPool", GetTxnPoolArgs{}, &reply)
 		m.MemoryPool = reply.PeerTxnPool
-		m.start = true
-		m.cond.Broadcast()
-	} else {
-		return errors.New("empty peer list. This should never happens")
 	}
+	// setup gossip client
+	var existingUpdates []gossip.Update
+	blockchainData, _ := m.Blockchain.Encode()
+	for _, data := range blockchainData {
+		existingUpdates = append(existingUpdates, gossip.NewUpdate(BlockIDPrefix, blockchain.DecodeToBlock(data).Hash, data))
+	}
+	for _, txn := range m.MemoryPool.PendingTxns {
+		existingUpdates = append(existingUpdates, gossip.NewUpdate(TransactionIDPrefix, txn.ID, txn.Serialize()))
+	}
+	_, _, gossipAddr, err := gossip.Start(
+		2,
+		"PushPull",
+		minerIP,
+		//[]string{},
+		existingUpdates,
+		minerId,
+		false)
+	if err != nil {
+		return err
+	}
+	m.Info.GossipAddr = gossipAddr
+
+	reply := RegisterReply{}
+	err = coordClient.Call("CoordAPIMiner.Register", RegisterArgs{m.Info}, &reply)
+	if err != nil {
+		return errors.New("cannot register as miner")
+	}
+	gossip.SetPeers(reply.PeerGossipAddrList)
+	m.start = true
+	m.cond.Broadcast()
 	m.mu.Unlock()
 
 	// miner does proof-of-work forever
@@ -198,6 +235,7 @@ type MinerAPICoord struct {
 }
 
 func (api *MinerAPICoord) NotifyPeerList(args NotifyPeerListArgs, reply *NotifyPeerListReply) error {
+	gossip.SetPeers(args.PeerGossipAddrList)
 	return nil
 }
 

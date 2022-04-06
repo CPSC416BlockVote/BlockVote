@@ -3,21 +3,23 @@ package blockvote
 import (
 	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
+	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"net/rpc"
 	"os"
-	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
-	"syscall"
 )
 
 const (
-	NCandidatesKey     = "NCandidates"
-	CandidateKeyPrefix = "cand-"
+	NCandidatesKey      = "NCandidates"
+	CandidateKeyPrefix  = "cand-"
+	BlockIDPrefix       = "block-"
+	TransactionIDPrefix = "txn-"
 )
 
 type CoordConfig struct {
@@ -36,15 +38,22 @@ type NodeInfo struct {
 // messages
 
 type (
+	DownloadArgs struct {
+	}
+	DownloadReply struct {
+		BlockChain   [][]byte
+		LastHash     []byte
+		Candidates   [][]byte
+		PeerAddrList []string // not including the miner itself
+	}
+
 	RegisterArgs struct {
 		Info MinerInfo
 	}
 
 	RegisterReply struct {
-		BlockChain   [][]byte
-		LastHash     []byte
-		Candidates   []Identity.Wallets
-		PeerAddrList []string
+		PeerAddrList       []string // will include the miner itself!
+		PeerGossipAddrList []string // the first address is coord!
 	}
 
 	GetCandidatesArgs struct {
@@ -80,6 +89,8 @@ type Coord struct {
 	nlMu       sync.Mutex // lock NodeList & MinerConns
 	NodeList   []NodeInfo
 	MinerConns []*rpc.Client
+
+	GossipAddr string
 }
 
 func NewCoord() *Coord {
@@ -90,9 +101,9 @@ func NewCoord() *Coord {
 
 func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCandidates uint8, ctrace *tracing.Tracer) error {
 	// FIXME: comment out below if statement to test coord restart
-	//if _, err := os.Stat("./storage/coord"); err == nil {
-	//	os.RemoveAll("./storage/coord")
-	//}
+	if _, err := os.Stat("./storage/coord"); err == nil {
+		os.RemoveAll("./storage/coord")
+	}
 
 	// 1. Initialization
 	// 1.1 Storage(DB)
@@ -105,10 +116,24 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	// TODO: 1.4 NodeList
 
 	// 2. Starting API services
+	coordIp := minerAPIListenAddr[0:strings.Index(minerAPIListenAddr, ":")]
+	// gossip
+	queryChan, _, gossipAddr, err := gossip.Start(2,
+		"Pull",
+		coordIp,
+		//[]string{},
+		[]gossip.Update{},
+		"coord",
+		true)
+	if err != nil {
+		return err
+	}
+	c.GossipAddr = gossipAddr
+
 	// >> miner
 	coordAPIMiner := new(CoordAPIMiner)
 	coordAPIMiner.c = c
-	err := util.NewRPCServerWithIpPort(coordAPIMiner, minerAPIListenAddr)
+	err = util.NewRPCServerWithIpPort(coordAPIMiner, minerAPIListenAddr)
 	if err != nil {
 		return errors.New("cannot start API service for miner")
 	}
@@ -123,11 +148,28 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	}
 	log.Println("[INFO] Listen to clients' API requests at", clientAPIListenAddr)
 
+	// 3. receive blocks from miners
+	for {
+		data := <-queryChan
+		// check if it is a block
+		if strings.HasPrefix(data.ID, BlockIDPrefix) {
+			block := blockchain.DecodeToBlock(data.Data)
+			// check if it is an unseen block
+			if !c.Blockchain.Exist(block.Hash) {
+				// try to put it to the blockchain
+				success, _, _ := c.Blockchain.Put(*block, false)
+				if success {
+					log.Println("[INFO] Received valid block: height", block.BlockNum, " hash", string(block.Hash))
+				}
+			}
+		}
+	}
+
 	// Wait for interrupt signal to exit
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	<-sigs
-	return nil
+	//sigs := make(chan os.Signal, 1)
+	//signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	//<-sigs
+	//return nil
 }
 
 func (c *Coord) Tracker() {
@@ -198,21 +240,56 @@ type CoordAPIMiner struct {
 	c *Coord
 }
 
-// Register registers a new miner in the system and returns necessary data about the system
+// Download provides necessary data about the system for new node. should be called before Register
+func (api *CoordAPIMiner) Download(args DownloadArgs, reply *DownloadReply) error {
+	// prepare reply data
+	encodedBlockchain, lastHash := api.c.Blockchain.Encode()
+	var peerAddrList []string
+	nodeList := api.c.NodeList[:]
+	for _, info := range nodeList {
+		peerAddrList = append(peerAddrList, info.Property.MinerMinerAddr)
+	}
+	var candidates [][]byte
+	for _, cand := range api.c.Candidates {
+		candidates = append(candidates, cand.Encode())
+	}
+
+	*reply = DownloadReply{
+		BlockChain:   encodedBlockchain,
+		LastHash:     lastHash,
+		Candidates:   candidates,
+		PeerAddrList: peerAddrList,
+	}
+	return nil
+}
+
+// Register registers a new miner in the system. should be called after Download
 func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) error {
 	api.c.nlMu.Lock()
 	defer api.c.nlMu.Unlock()
 
-	// add to list
+	// add new miner to list
 	newNodeInfo := NodeInfo{Property: args.Info}
 	api.c.NodeList = append(api.c.NodeList, newNodeInfo)
+
+	// notify existing miners
+	var peerAddrList []string
+	var peerGossipAddrList = []string{api.c.GossipAddr} // coord's gossip addr will always be the first!
+	for _, info := range api.c.NodeList {
+		peerAddrList = append(peerAddrList, info.Property.MinerMinerAddr)
+		peerGossipAddrList = append(peerGossipAddrList, info.Property.GossipAddr)
+	}
 	for _, minerConn := range api.c.MinerConns {
 		if minerConn != nil {
+			args := NotifyPeerListArgs{
+				PeerAddrList:       peerAddrList,
+				PeerGossipAddrList: peerGossipAddrList,
+			}
 			reply := NotifyPeerListReply{}
-			// TODO: notifies existing miners of the new miner
-			go minerConn.Call("MinerAPICoord.NotifyPeerList", NotifyPeerListArgs{}, &reply)
+			go minerConn.Call("MinerAPICoord.NotifyPeerList", args, &reply)
 		}
 	}
+
 	// add rpc connection
 	minerConn, err := rpc.Dial("tcp", newNodeInfo.Property.CoordListenAddr)
 	if err != nil {
@@ -222,17 +299,9 @@ func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) erro
 	api.c.MinerConns = append(api.c.MinerConns, minerConn)
 
 	// prepare reply data
-	encodedBlockchain, lastHash := api.c.Blockchain.Encode()
-	var peerAddrList []string
-	for _, info := range api.c.NodeList {
-		peerAddrList = append(peerAddrList, info.Property.MinerMinerAddr)
-	}
-
 	*reply = RegisterReply{
-		BlockChain:   encodedBlockchain,
-		LastHash:     lastHash,
-		Candidates:   api.c.Candidates,
-		PeerAddrList: peerAddrList,
+		PeerAddrList:       peerAddrList,
+		PeerGossipAddrList: peerGossipAddrList,
 	}
 
 	return nil

@@ -121,22 +121,25 @@ func (bc *BlockChain) Get(hash []byte) *Block {
 }
 
 // Put adds a new block to the blockchain
-func (bc *BlockChain) Put(block Block, owned bool) (success bool) {
+func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Transaction, oldTxns []*Transaction) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
 
 	// sanity check
 	if len(block.PrevHash) == 0 || block.BlockNum == 0 || len(block.Hash) == 0 || len(block.MinerID) == 0 {
 		log.Println("[WARN] Block has missing values and will not be added to the chain.")
-		return false
+		success = false
+		return
 	}
 	if !bc.Exist(block.PrevHash) {
 		log.Println("[WARN] Previous block does not exist and the block will not be added to the chain.")
-		return false
+		success = false
+		return
 	}
 	if bc.Exist(block.Hash) {
 		log.Println("[WARN] Block already exists and will not be added to the chain.")
-		return false
+		success = false
+		return
 	}
 
 	// validate
@@ -144,12 +147,14 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool) {
 		// validate pow
 		pow := NewProof(&block)
 		if !pow.Validate() {
-			return false
+			success = false
+			return
 		}
 		// validate txns
 		for _, txn := range block.Txns {
 			if !bc.ValidateTxn(txn) {
-				return false
+				success = false
+				return
 			}
 		}
 	}
@@ -164,14 +169,22 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool) {
 	// check chain
 	if bytes.Compare(block.PrevHash, bc.LastHash) == 0 {
 		bc.LastHash = block.Hash
+	} else {
+		// possible new fork, check length
+		if block.BlockNum > bc.Get(bc.LastHash).BlockNum {
+			// switch fork
+			newTxns, oldTxns = bc.CheckoutFork(block.Hash)
+		}
 	}
-	return true
+	success = true
+	return
 }
 
-// CheckoutFork checks out a different fork and returns any difference between two forks
+// CheckoutFork checks out a different fork and returns any difference between two forks. internal use only
 func (bc *BlockChain) CheckoutFork(lastHashNew []byte) (newTxns []*Transaction, oldTxns []*Transaction) {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
+	// NOTE: this function will not acquire lock and therefore can only be called internally.
+	//bc.mu.Lock()
+	//defer bc.mu.Unlock()
 
 	if bytes.Compare(lastHashNew, bc.LastHash) == 0 {
 		log.Println("[WARN] Attempting to checkout the same fork")
@@ -211,6 +224,9 @@ func (bc *BlockChain) CheckoutFork(lastHashNew []byte) (newTxns []*Transaction, 
 			oldTxns = append(oldTxns, txn)
 		}
 	}
+
+	// set last hash
+	bc.LastHash = lastHashNew
 
 	return newTxns, oldTxns
 }
