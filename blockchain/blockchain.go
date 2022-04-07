@@ -161,14 +161,14 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 			return
 		}
 		// validate txns
-		for _, valid := range bc.ValidateTxns(block.Txns) {
+		for _, valid := range bc._ValidateTxns(block.Txns, false) {
 			if !valid {
 				success = false
 				return
 			}
 		}
 		//for _, txn := range block.Txns {
-		//	if !bc.ValidateTxn(txn) {
+		//	if !bc._ValidateTxn(txn, false) {
 		//		success = false
 		//		return
 		//	}
@@ -257,7 +257,8 @@ func (bc *BlockChain) NewIterator(hash []byte) *ChainIterator {
 	}
 }
 
-func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
+// INTERNAL USE ONLY
+func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool) bool {
 	// 1. verify signature
 	if !txn.Verify() {
 		return false
@@ -278,9 +279,15 @@ func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
 		return false
 	}
 	// 2.3: voter can only vote once
-	bc.mu.Lock()
-	iter := bc.NewIterator(bc.LastHash)
-	bc.mu.Unlock()
+	var iter *ChainIterator
+	if lock {
+		bc.mu.Lock()
+		iter = bc.NewIterator(bc.LastHash)
+		bc.mu.Unlock()
+	} else {
+		iter = bc.NewIterator(bc.LastHash)
+	}
+
 	for block, end := iter.Next(); !end; block, end = iter.Next() {
 		for _, pastTxn := range block.Txns {
 			if bytes.Compare(pastTxn.PublicKey, txn.PublicKey) == 0 {
@@ -291,21 +298,37 @@ func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
 	return true
 }
 
-// ValidateTxns validates a set of transactions and deal with conflicting transactions among them
-func (bc *BlockChain) ValidateTxns(txns []*Transaction) (res []bool) {
+// INTERNAL USE ONLY
+func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool) (res []bool) {
 	// check conflicting txns (first received wins)
 	// NOTE: txns should be sorted by when they were received. earlier txns should appear in front
+	if lock {
+		bc.mu.Lock()
+	}
 	voterMap := make(map[string]bool)
 	for _, txn := range txns {
 		if voterMap[fmt.Sprintf("%x", txn.PublicKey)] {
 			res = append(res, false)
 		} else {
-			res = append(res, bc.ValidateTxn(txn))
+			res = append(res, bc._ValidateTxn(txn, false))
 			if res[len(res)-1] {
 				voterMap[fmt.Sprintf("%x", txn.PublicKey)] = true
 			}
 		}
 	}
+	if lock {
+		bc.mu.Unlock()
+	}
+	return
+}
+
+func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
+	return bc._ValidateTxn(txn, true)
+}
+
+// ValidateTxns validates a set of transactions and deal with conflicting transactions among them
+func (bc *BlockChain) ValidateTxns(txns []*Transaction) (res []bool) {
+	res = bc._ValidateTxns(txns, true)
 	return
 }
 
