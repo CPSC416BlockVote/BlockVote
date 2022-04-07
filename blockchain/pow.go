@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"math/big"
+	"time"
 )
 
 type ProofOfWork struct {
@@ -15,7 +16,7 @@ type ProofOfWork struct {
 	Target *big.Int
 }
 
-const NumZeros = 20
+const NumZeros = 8
 
 // NewProof creates a new ProofOfWork structure
 func NewProof(b *Block) *ProofOfWork {
@@ -40,6 +41,7 @@ func (pow *ProofOfWork) Run() (uint32, []byte) {
 			break
 		} else {
 			nonce++
+			time.Sleep(20 * time.Millisecond)
 		}
 	}
 	//fmt.Printf("Nonce: %v\n", nonce)
