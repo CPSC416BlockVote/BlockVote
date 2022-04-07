@@ -78,6 +78,13 @@ type (
 	QueryTxnReply struct {
 		NumConfirmed int
 	}
+
+	QueryResultsArgs struct {
+	}
+
+	QueryResultsReply struct {
+		Votes []uint
+	}
 )
 
 type Coord struct {
@@ -119,11 +126,16 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	// 2. Starting API services
 	coordIp := minerAPIListenAddr[0:strings.Index(minerAPIListenAddr, ":")]
 	// gossip
+	var existingUpdates []gossip.Update
+	blockchainData, _ := c.Blockchain.Encode()
+	for _, data := range blockchainData {
+		existingUpdates = append(existingUpdates, gossip.NewUpdate(BlockIDPrefix, blockchain.DecodeToBlock(data).Hash, data))
+	}
 	queryChan, _, gossipAddr, err := gossip.Start(2,
 		"Pull",
 		coordIp,
 		//[]string{},
-		[]gossip.Update{gossip.NewUpdate(BlockIDPrefix, c.Blockchain.GetLastHash(), c.Blockchain.Get(c.Blockchain.GetLastHash()).Encode())},
+		existingUpdates,
 		"coord",
 		true)
 	if err != nil {
@@ -340,5 +352,10 @@ func (api *CoordAPIClient) GetMinerList(args GetMinerListArgs, reply *GetMinerLi
 // QueryTxn queries a transaction in the system and returns the number of blocks that confirm it.
 func (api *CoordAPIClient) QueryTxn(args QueryTxnArgs, reply *QueryTxnReply) error {
 	*reply = QueryTxnReply{NumConfirmed: api.c.Blockchain.TxnStatus(args.TxID)}
+	return nil
+}
+
+func (api *CoordAPIClient) QueryResults(_ QueryResultsArgs, reply *QueryResultsReply) error {
+	*reply = QueryResultsReply{Votes: api.c.Blockchain.VotingStatus()}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -160,12 +161,18 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 			return
 		}
 		// validate txns
-		for _, txn := range block.Txns {
-			if !bc.ValidateTxn(txn) {
+		for _, valid := range bc.ValidateTxns(block.Txns) {
+			if !valid {
 				success = false
 				return
 			}
 		}
+		//for _, txn := range block.Txns {
+		//	if !bc.ValidateTxn(txn) {
+		//		success = false
+		//		return
+		//	}
+		//}
 	}
 
 	// save to db
@@ -284,6 +291,24 @@ func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
 	return true
 }
 
+// ValidateTxns validates a set of transactions and deal with conflicting transactions among them
+func (bc *BlockChain) ValidateTxns(txns []*Transaction) (res []bool) {
+	// check conflicting txns (first received wins)
+	// NOTE: txns should be sorted by when they were received. earlier txns should appear in front
+	voterMap := make(map[string]bool)
+	for _, txn := range txns {
+		if voterMap[fmt.Sprintf("%x", txn.PublicKey)] {
+			res = append(res, false)
+		} else {
+			res = append(res, bc.ValidateTxn(txn))
+			if res[len(res)-1] {
+				voterMap[fmt.Sprintf("%x", txn.PublicKey)] = true
+			}
+		}
+	}
+	return
+}
+
 // TxnStatus returns the number of blocks that confirm the given txn. -1 indicates txn not found
 func (bc *BlockChain) TxnStatus(txid []byte) int {
 	// get an iterator for the longest chain
@@ -304,6 +329,31 @@ func (bc *BlockChain) TxnStatus(txid []byte) int {
 	}
 
 	return res
+}
+
+func (bc *BlockChain) VotingStatus() (votes []uint) {
+	for i := 0; i < len(bc.Candidates); i++ {
+		votes = append(votes, 0)
+	}
+	bc.mu.Lock()
+	iter := bc.NewIterator(bc.LastHash)
+	bc.mu.Unlock()
+	skip := 6 // last six blocks do not count
+	for block, end := iter.Next(); !end; block, end = iter.Next() {
+		if skip > 0 {
+			skip--
+			continue
+		}
+		for _, txn := range block.Txns {
+			for idx, cand := range bc.Candidates {
+				if txn.Data.VoterCandidate == cand.CandidateData.CandidateName {
+					votes[idx]++
+					break
+				}
+			}
+		}
+	}
+	return
 }
 
 // ----- ChainIterator APIs -----
