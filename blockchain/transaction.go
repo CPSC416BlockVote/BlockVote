@@ -43,6 +43,16 @@ func (tx Transaction) Serialize() []byte {
 	return encoded.Bytes()
 }
 
+func DeserializeTransaction(data []byte) Transaction {
+	var transaction Transaction
+
+	decoder := gob.NewDecoder(bytes.NewReader(data))
+	if err := decoder.Decode(&transaction); err != nil {
+		log.Panic(err)
+	}
+	return transaction
+}
+
 func (tx *Transaction) SetID() {
 	var encoded bytes.Buffer
 	var hash [32]byte
