@@ -5,6 +5,7 @@ import (
 	wallet "cs.ubc.ca/cpsc416/BlockVote/Identity"
 	blockChain "cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/blockvote"
+	"errors"
 	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
@@ -26,6 +27,7 @@ type EV struct {
 	voterWallet            wallet.Wallets
 	voterWalletAddr        string
 	N_Receives             int
+	candidateList          []string
 	//connCoord				*net.Conn
 }
 
@@ -82,6 +84,7 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 		wallets := wallet.DecodeToWallets(cand)
 		canadiateName = append(canadiateName, wallets.CandidateData.CandidateName)
 	}
+	d.candidateList = canadiateName
 	fmt.Println("List of candidate:", canadiateName)
 
 	// create ballot from user info
@@ -144,7 +147,24 @@ func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 
 // GetCandVotes API retrieve the number of votes a candidate has.
 func (d *EV) GetCandVotes(candidate string) (uint, error) {
-	return 0, nil
+
+	if len(d.candidateList) == 0 {
+		return 0, errors.New("Empty Candidates.\n")
+	}
+
+	var queryResultReply *blockvote.QueryResultsReply
+	err := d.coordClient.Call("CoordAPIClient.QueryResults", nil, &queryResultReply)
+	if err != nil {
+		return 0, err
+	}
+
+	idx := 0
+	for i, cand := range d.candidateList {
+		if cand == candidate {
+			idx = i
+		}
+	}
+	return queryResultReply.Votes[idx], nil
 }
 
 // Stop Stops the EV instance.
