@@ -25,6 +25,8 @@ type EV struct {
 	minerClient            *rpc.Client
 	voterWallet            wallet.Wallets
 	voterWalletAddr        string
+	N_Receives             int
+	//connCoord				*net.Conn
 }
 
 // create wallet for voters
@@ -65,6 +67,7 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	d.localCoordListenerAddr = lcAddr
 	d.coordClient = coordClient
 	d.localMinerListenerAddr = lmAddr
+	d.N_Receives = N_Receives
 
 	// get candidates from Coord
 	var candidatesReply *blockvote.GetCandidatesReply
@@ -83,7 +86,19 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 
 	// create ballot from user info
 	ballot := createBallot()
+	d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
 
+	return nil
+}
+
+// Vote API provides the functionality of voting
+func (d *EV) Vote(from, fromID, to string) error {
+
+	ballot := blockChain.Ballot{
+		VoterName:      from,
+		VoterStudentID: fromID,
+		VoterCandidate: to,
+	}
 	// create wallet for voter
 	d.createVoterWallet(ballot)
 
@@ -92,19 +107,22 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 
 	// call coord for list of active miners with length N_Receives
 	var minerListReply *blockvote.GetMinerListReply
-	err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
+	err := d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
 	if err != nil {
 		return err
 	}
 
 	// random pick one miner addr
-	index := rand.Intn(N_Receives - 1)
+	index := 0
+	if d.N_Receives > 1 {
+		index = rand.Intn(d.N_Receives - 1)
+	}
 	minerIPPort := minerListReply.MinerAddrList[index]
 
 	// setup conn to miner
 	d.connMinerAddr(minerIPPort)
 	var submitTxnReply *blockvote.SubmitTxnReply
-	err = d.coordClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
+	err = d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
 	if err != nil {
 		return err
 	}
@@ -112,18 +130,20 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	return nil
 }
 
-// Vote API provides the functionality of voting
-func (d *EV) Vote() error {
-	return nil
-}
-
 // GetBallotStatus API checks the status of a transaction and returns the number of blocks that confirm it
 func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
-	return -1, nil
+	var queryTxnReply *blockvote.QueryTxnReply
+	err := d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
+		TxID: TxID,
+	}, &queryTxnReply)
+	if err != nil {
+		return -1, err
+	}
+	return queryTxnReply.NumConfirmed, nil
 }
 
 // GetCandVotes API retrieve the number of votes a candidate has.
-func (d *EV) GetCandVotes() (uint, error) {
+func (d *EV) GetCandVotes(candidate string) (uint, error) {
 	return 0, nil
 }
 
@@ -181,11 +201,11 @@ func (d *EV) createTransaction(ballot blockChain.Ballot) blockChain.Transaction 
 // connect with miner addr with timeout to retry
 func (d *EV) connMinerAddr(minerAddr string) error {
 	// setup connection to the miner
-	haddr, err := net.ResolveTCPAddr("tcp", minerAddr)
+	maddr, err := net.ResolveTCPAddr("tcp", minerAddr)
 	if err != nil {
 		return err
 	}
-	conn, err := net.DialTCP("tcp", d.localMinerListenerAddr, haddr)
+	conn, err := net.DialTCP("tcp", d.localMinerListenerAddr, maddr)
 	if err != nil {
 		return err
 	}
