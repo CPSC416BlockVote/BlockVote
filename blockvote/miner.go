@@ -226,32 +226,30 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 			}
 		default:
 			prevHash := m.Blockchain.LastHash
-			if len(m.MemoryPool.PendingTxns) > 0 {
-				var selectedTxn []*blockchain.Transaction
-				m.selectTxn(selectedTxn, maxTxn)
-				fmt.Printf("Block #%d:\n", i+1)
-				block := blockchain.Block{
-					PrevHash: prevHash,
-					BlockNum: uint8(i + 1),
-					Nonce:    0,
-					Txns:     selectedTxn,
-					MinerID:  minerId,
-					Hash:     []byte{},
-				}
-				pow := blockchain.NewProof(&block)
-				nonce, hash := pow.Run()
-				block.Nonce = nonce
-				block.Hash = hash
-				prevHash = hash
-				updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
-
-				fmt.Printf("Nonce: %d\n", block.Nonce)
-				fmt.Printf("Hash: %x\n", block.Hash)
-				fmt.Println()
-				i++
-
-				m.updateBlockChainAndTxnPool(block, true)
+			var selectedTxn []*blockchain.Transaction
+			m.selectTxn(selectedTxn, maxTxn)
+			fmt.Printf("Block #%d:\n", i+1)
+			block := blockchain.Block{
+				PrevHash: prevHash,
+				BlockNum: uint8(i + 1),
+				Nonce:    0,
+				Txns:     selectedTxn,
+				MinerID:  minerId,
+				Hash:     []byte{},
 			}
+			pow := blockchain.NewProof(&block)
+			nonce, hash := pow.Run()
+			block.Nonce = nonce
+			block.Hash = hash
+			prevHash = hash
+			updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
+
+			fmt.Printf("Nonce: %d\n", block.Nonce)
+			fmt.Printf("Hash: %x\n", block.Hash)
+			fmt.Println()
+			i++
+
+			m.updateBlockChainAndTxnPool(block, true)
 		}
 	}
 	return nil
@@ -272,18 +270,21 @@ func (m *Miner) updateBlockChainAndTxnPool(block blockchain.Block, own bool) {
 	success, newTxn, _ := m.Blockchain.Put(block, own)
 	if success {
 		// the block has been added to the blockchain
+		existID := make(map[string]bool)
 		for _, txn := range block.Txns {
+			existID[string(txn.ID)] = true
 			m.ReceivedTxns[string(txn.ID)] = true
 		}
 		if newTxn != nil {
 			// switched fork
 			for _, txn := range newTxn {
+				existID[string(txn.ID)] = true
 				m.ReceivedTxns[string(txn.ID)] = true
 			}
 		}
 		// remove the committed txns from pool
 		for i, txn := range m.MemoryPool.PendingTxns {
-			if m.ReceivedTxns[string(txn.ID)] {
+			if existID[string(txn.ID)] {
 				m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
 			}
 		}
