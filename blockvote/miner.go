@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
+	"math"
 	"strings"
 	"sync"
 )
@@ -21,6 +22,7 @@ type MinerConfig struct {
 	Difficulty        uint8
 	Secret            []byte
 	TracingIdentity   string
+	MaxTxn            uint8
 }
 
 type MinerInfo struct {
@@ -72,6 +74,9 @@ type Miner struct {
 	Candidates   []Identity.Wallets
 	MemoryPool   TxnPool
 
+	queryChan  <-chan gossip.Update
+	updateChan chan<- gossip.Update
+
 	mu    sync.Mutex
 	cond  *sync.Cond
 	start bool
@@ -88,7 +93,7 @@ type TxnPool struct {
 	PendingTxns []blockchain.Transaction
 }
 
-func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, difficulty uint8, mtrace *tracing.Tracer) error {
+func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, difficulty uint8, maxTxn uint8, mtrace *tracing.Tracer) error {
 	err := m.Storage.New("", true)
 	if err != nil {
 		util.CheckErr(err, "error when creating database")
@@ -179,7 +184,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	for _, txn := range m.MemoryPool.PendingTxns {
 		existingUpdates = append(existingUpdates, gossip.NewUpdate(TransactionIDPrefix, txn.ID, txn.Serialize()))
 	}
-	_, updateChan, gossipAddr, err := gossip.Start(
+	queryChan, updateChan, gossipAddr, err := gossip.Start(
 		2,
 		"PushPull",
 		minerIP,
@@ -191,6 +196,8 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 		return err
 	}
 	m.Info.GossipAddr = gossipAddr
+	m.queryChan = queryChan
+	m.updateChan = updateChan
 
 	reply := RegisterReply{}
 	err = coordClient.Call("CoordAPIMiner.Register", RegisterArgs{m.Info}, &reply)
@@ -205,32 +212,58 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	// miner does proof-of-work forever
 	i := 0
 	for {
-		prevHash := m.Blockchain.LastHash
-		if len(m.MemoryPool.PendingTxns) == 0 {
-			// TODO: implement the select
-			fmt.Printf("Block #%d:\n", i+1)
-			block := blockchain.Block{
-				PrevHash: prevHash,
-				BlockNum: uint8(i + 1),
-				Nonce:    0,
-				Txns:     []*blockchain.Transaction{},
-				MinerID:  minerId,
-				Hash:     []byte{},
-			}
-			pow := blockchain.NewProof(&block)
-			nonce, hash := pow.Run()
-			block.Nonce = nonce
-			block.Hash = hash
-			prevHash = hash
-			updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
+		select {
+		case blockUpdate := <-queryChan:
+			if strings.Contains(blockUpdate.ID, BlockIDPrefix) {
 
-			fmt.Printf("Nonce: %d\n", block.Nonce)
-			fmt.Printf("Hash: %x\n", block.Hash)
-			fmt.Println()
-			i++
+			} else if strings.Contains(blockUpdate.ID, TransactionIDPrefix) {
+				err = minerAPIClient.SubmitTxn(SubmitTxnArgs{blockchain.DeserializeTransaction(blockUpdate.Data)}, &SubmitTxnReply{})
+				if err != nil {
+					return err
+				}
+			}
+		default:
+			prevHash := m.Blockchain.LastHash
+			if len(m.MemoryPool.PendingTxns) > 0 {
+				var selectedTxn []*blockchain.Transaction
+				m.selectTxn(selectedTxn, maxTxn)
+				fmt.Printf("Block #%d:\n", i+1)
+				block := blockchain.Block{
+					PrevHash: prevHash,
+					BlockNum: uint8(i + 1),
+					Nonce:    0,
+					Txns:     selectedTxn,
+					MinerID:  minerId,
+					Hash:     []byte{},
+				}
+				pow := blockchain.NewProof(&block)
+				nonce, hash := pow.Run()
+				block.Nonce = nonce
+				block.Hash = hash
+				prevHash = hash
+				updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
+
+				fmt.Printf("Nonce: %d\n", block.Nonce)
+				fmt.Printf("Hash: %x\n", block.Hash)
+				fmt.Println()
+				i++
+
+				// TODO: Update BlockChain
+
+			}
 		}
 	}
 	return nil
+}
+
+func (m *Miner) selectTxn(selectedTxn []*blockchain.Transaction, maxTxn uint8) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	i := 0
+	for ; i < int(math.Min(float64(maxTxn), float64(len(m.MemoryPool.PendingTxns)))); i++ {
+		selectedTxn = append(selectedTxn, &m.MemoryPool.PendingTxns[i])
+	}
+	m.MemoryPool.PendingTxns = m.MemoryPool.PendingTxns[i:]
 }
 
 // ----- APIs for coord -----
@@ -276,7 +309,9 @@ func (api *MinerAPIClient) SubmitTxn(args SubmitTxnArgs, reply *SubmitTxnReply) 
 		if !api.m.ReceivedTxns[sid] {
 			api.m.ReceivedTxns[sid] = true
 			api.m.MemoryPool.PendingTxns = append(api.m.MemoryPool.PendingTxns, args.Txn)
+			api.m.updateChan <- gossip.NewUpdate(TransactionIDPrefix, args.Txn.ID, args.Txn.Serialize())
 		}
 	}
+
 	return nil
 }

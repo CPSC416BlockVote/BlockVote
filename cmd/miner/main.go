@@ -15,5 +15,5 @@ func main() {
 		Secret:         config.Secret,
 	})
 	server := blockvote.NewMiner()
-	server.Start(config.MinerId, config.CoordAddr, config.MinerAddr, config.Difficulty, mtracer)
+	server.Start(config.MinerId, config.CoordAddr, config.MinerAddr, config.Difficulty, config.MaxTxn, mtracer)
 }
