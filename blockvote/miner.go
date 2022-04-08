@@ -267,7 +267,7 @@ func (m *Miner) selectTxn(selectedTxn []*blockchain.Transaction, maxTxn uint8) {
 func (m *Miner) updateBlockChainAndTxnPool(block blockchain.Block, own bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	success, newTxn, _ := m.Blockchain.Put(block, own)
+	success, newTxn, oldTxn := m.Blockchain.Put(block, own)
 	if success {
 		// the block has been added to the blockchain
 		existID := make(map[string]bool)
@@ -275,11 +275,18 @@ func (m *Miner) updateBlockChainAndTxnPool(block blockchain.Block, own bool) {
 			existID[string(txn.ID)] = true
 			m.ReceivedTxns[string(txn.ID)] = true
 		}
-		if newTxn != nil {
+		if newTxn != nil && oldTxn != nil {
 			// switched fork
 			for _, txn := range newTxn {
 				existID[string(txn.ID)] = true
 				m.ReceivedTxns[string(txn.ID)] = true
+			}
+			// add uncommitted txns to pool
+			for _, txn := range oldTxn {
+				if !existID[string(txn.ID)] {
+					m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns, *txn)
+					m.ReceivedTxns[string(txn.ID)] = true
+				}
 			}
 		}
 		// remove the committed txns from pool
