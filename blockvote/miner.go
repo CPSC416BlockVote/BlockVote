@@ -215,7 +215,9 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 		select {
 		case blockUpdate := <-queryChan:
 			if strings.Contains(blockUpdate.ID, BlockIDPrefix) {
-
+				block := *blockchain.DecodeToBlock(blockUpdate.Data)
+				m.updateBlockChainAndTxnPool(block, false)
+				m.updateChan <- blockUpdate
 			} else if strings.Contains(blockUpdate.ID, TransactionIDPrefix) {
 				err = minerAPIClient.SubmitTxn(SubmitTxnArgs{blockchain.DeserializeTransaction(blockUpdate.Data)}, &SubmitTxnReply{})
 				if err != nil {
@@ -248,8 +250,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 				fmt.Println()
 				i++
 
-				// TODO: Update BlockChain
-
+				m.updateBlockChainAndTxnPool(block, true)
 			}
 		}
 	}
@@ -257,13 +258,36 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 }
 
 func (m *Miner) selectTxn(selectedTxn []*blockchain.Transaction, maxTxn uint8) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	//m.mu.Lock()
+	//defer m.mu.Unlock()
 	i := 0
 	for ; i < int(math.Min(float64(maxTxn), float64(len(m.MemoryPool.PendingTxns)))); i++ {
 		selectedTxn = append(selectedTxn, &m.MemoryPool.PendingTxns[i])
 	}
-	m.MemoryPool.PendingTxns = m.MemoryPool.PendingTxns[i:]
+}
+
+func (m *Miner) updateBlockChainAndTxnPool(block blockchain.Block, own bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	success, newTxn, _ := m.Blockchain.Put(block, own)
+	if success {
+		// the block has been added to the blockchain
+		for _, txn := range block.Txns {
+			m.ReceivedTxns[string(txn.ID)] = true
+		}
+		if newTxn != nil {
+			// switched fork
+			for _, txn := range newTxn {
+				m.ReceivedTxns[string(txn.ID)] = true
+			}
+		}
+		// remove the committed txns from pool
+		for i, txn := range m.MemoryPool.PendingTxns {
+			if m.ReceivedTxns[string(txn.ID)] {
+				m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
+			}
+		}
+	}
 }
 
 // ----- APIs for coord -----

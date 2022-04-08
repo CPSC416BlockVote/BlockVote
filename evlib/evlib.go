@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/rpc"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -28,7 +29,8 @@ type EV struct {
 	voterWalletAddr        string
 	N_Receives             int
 	candidateList          []string
-	//connCoord				*net.Conn
+	connCoord              *net.TCPConn
+	minerIpPort            string
 }
 
 // create wallet for voters
@@ -39,6 +41,7 @@ func NewEV() *EV {
 }
 
 // ----- evlib APIs -----
+var quit chan bool
 
 // Start Starts the instance of EV to use for connecting to the system with the given coord's IP:port.
 func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort string, localCoordIPPort string, localMinerIPPort string, N_Receives int) error {
@@ -55,6 +58,7 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	}
 
 	conn, err := net.DialTCP("tcp", lcAddr, cAddr)
+	d.connCoord = conn
 	if err != nil {
 		return err
 	}
@@ -87,10 +91,38 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	d.candidateList = canadiateName
 	fmt.Println("List of candidate:", canadiateName)
 
+	quit = make(chan bool)
+	go func() {
+		// call coord for list of active miners with length N_Receives
+		for {
+			var minerListReply *blockvote.GetMinerListReply
+			err := d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
+			if err != nil {
+				log.Panic(err)
+			}
+
+			// random pick one miner addr
+			index := 0
+			if d.N_Receives > 1 {
+				index = rand.Intn(d.N_Receives - 1)
+			}
+			d.minerIpPort = minerListReply.MinerAddrList[index]
+			time.Sleep(500 * time.Millisecond)
+			select {
+			case <-quit:
+				// end
+				return
+			default:
+				// Do other stuff
+			}
+		}
+	}()
 	// create ballot from user info
 	ballot := createBallot()
-	d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
-
+	err = d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -108,24 +140,10 @@ func (d *EV) Vote(from, fromID, to string) error {
 	// create transaction
 	txn := d.createTransaction(ballot)
 
-	// call coord for list of active miners with length N_Receives
-	var minerListReply *blockvote.GetMinerListReply
-	err := d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
-	if err != nil {
-		return err
-	}
-
-	// random pick one miner addr
-	index := 0
-	if d.N_Receives > 1 {
-		index = rand.Intn(d.N_Receives - 1)
-	}
-	minerIPPort := minerListReply.MinerAddrList[index]
-
 	// setup conn to miner
-	d.connMinerAddr(minerIPPort)
+	d.connMinerAddr(d.minerIpPort)
 	var submitTxnReply *blockvote.SubmitTxnReply
-	err = d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
+	err := d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
 	if err != nil {
 		return err
 	}
@@ -170,6 +188,10 @@ func (d *EV) GetCandVotes(candidate string) (uint, error) {
 // Stop Stops the EV instance.
 // This call always succeeds.
 func (d *EV) Stop() {
+	quit <- true
+	d.coordClient.Close()
+	d.minerClient.Close()
+	d.connCoord.Close()
 	return
 }
 
@@ -188,9 +210,9 @@ func createBallot() blockChain.Ballot {
 	candidateName, _ := reader.ReadString('\n')
 
 	ballot := blockChain.Ballot{
-		voterName,
-		voterId,
-		candidateName,
+		strings.TrimRight(voterName, "\r\n"),
+		strings.TrimRight(voterId, "\r\n"),
+		strings.TrimRight(candidateName, "\r\n"),
 	}
 	return ballot
 }
