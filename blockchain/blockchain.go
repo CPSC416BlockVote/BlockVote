@@ -188,7 +188,7 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 	} else {
 		// possible new fork, check length
 		if block.BlockNum > bc.Get(bc.LastHash).BlockNum {
-			// switch fork
+			// switch fork (newTxns and oldTxns won't be nil when switching to a new fork, but the length may be zero)
 			newTxns, oldTxns = bc.CheckoutFork(block.Hash)
 		}
 	}
@@ -228,12 +228,14 @@ func (bc *BlockChain) CheckoutFork(lastHashNew []byte) (newTxns []*Transaction, 
 	}
 
 	// collect txns
+	newTxns = []*Transaction{}
 	for _, hash := range blockHashesNew[i:] {
 		block := bc.Get(hash)
 		for _, txn := range block.Txns {
 			newTxns = append(newTxns, txn)
 		}
 	}
+	oldTxns = []*Transaction{}
 	for _, hash := range blockHashesOld[i:] {
 		block := bc.Get(hash)
 		for _, txn := range block.Txns {
