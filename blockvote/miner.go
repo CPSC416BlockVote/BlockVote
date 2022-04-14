@@ -7,6 +7,7 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
+	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"math"
@@ -242,7 +243,6 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 
 func (m *Miner) TxnService() {
 	for !m.start {
-		m.cond.Wait()
 	}
 	for {
 		txn := <-m.TxnRecvChan
@@ -260,7 +260,6 @@ func (m *Miner) TxnService() {
 
 func (m *Miner) BlockService() {
 	for !m.start {
-		m.cond.Wait()
 	}
 	for {
 		block := <-m.BlockRecvChan
@@ -275,6 +274,8 @@ func (m *Miner) BlockService() {
 				if newTxns == nil { // no fork switching
 					if bytes.Compare(prevLastHash, curLastHash) != 0 {
 						// new block is on the current chain
+						log.Printf("[INFO] New block (%x) from peers is added to the current chain\n", block.Hash[:5])
+						printBlock(block)
 						// remove new block's txns from pool
 						for i := 0; i < len(m.MemoryPool.PendingTxns); {
 							rm := false
@@ -293,9 +294,14 @@ func (m *Miner) BlockService() {
 						m.ChainUpdatedChan <- 1
 					} else {
 						// new block is not on the current chain, just ignore it
+						log.Printf("[INFO] New block (%x) from peers is added to an alternative fork\n", block.Hash[:5])
+						printBlock(block)
 					}
 				} else {
 					// new longest chain!
+					log.Printf("[INFO] New block (%x) from peers is added to an alternative branch\n", block.Hash[:5])
+					printBlock(block)
+					log.Println("[INFO] Switching to a new chain")
 					// first, add old txns that get kicked out b.c. it is not on the longest chain anymore
 					for _, oldTxn := range oldTxns {
 						m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns, *oldTxn)
@@ -327,7 +333,6 @@ func (m *Miner) BlockService() {
 
 func (m *Miner) MiningService() {
 	for !m.start {
-		m.cond.Wait()
 	}
 	newCycle := true
 	var pow blockchain.ProofOfWork
@@ -395,6 +400,8 @@ func (m *Miner) MiningService() {
 								log.Println("[WARN] Local put causes unexpected fork switch")
 							}
 							if success {
+								log.Printf("[INFO] New block (%x) mined\n", block.Hash[:5])
+								printBlock(&block)
 								// broadcast it first!
 								m.updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
 
@@ -461,6 +468,16 @@ func (m *Miner) updateBlockChainAndTxnPool(block blockchain.Block, own bool) {
 				m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
 			}
 		}
+	}
+}
+
+func printBlock(block *blockchain.Block) {
+	fmt.Printf("Block #%d (%x)\n", block.BlockNum, block.Hash[:5])
+	fmt.Printf("\tPrevHash:\t %x\n", block.PrevHash)
+	fmt.Printf("\tNonce:\t\t %d\n", block.Nonce)
+	fmt.Printf("\tTxns:\t\t %d\n", len(block.Txns))
+	for _, txn := range block.Txns {
+		fmt.Printf("\t    %s\t -> %s\n", txn.Data.VoterName, txn.Data.VoterCandidate)
 	}
 }
 
