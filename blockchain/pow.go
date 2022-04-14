@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/gob"
 	"log"
 	"math"
 	"math/big"
@@ -99,13 +98,22 @@ func (pow *ProofOfWork) HashTxns() []byte {
 	var txHash [32]byte
 
 	for _, tx := range pow.Block.Txns {
-		var encoded bytes.Buffer
-		err := gob.NewEncoder(&encoded).Encode(tx)
-		if err != nil {
-			log.Println("[WARN] error when converting txns to bytes.", err)
-		}
-		txBytes = append(txBytes, encoded.Bytes())
+		txBytes = append(txBytes, EncodeTxn(tx))
 	}
+
 	txHash = sha256.Sum256(bytes.Join(txBytes, []byte{}))
 	return txHash[:]
+}
+
+func EncodeTxn(tx *Transaction) []byte {
+	str := tx.Data.VoterCandidate + tx.Data.VoterName + tx.Data.VoterStudentID
+	data := bytes.Join(
+		[][]byte{
+			[]byte(str),
+			tx.Signature,
+			tx.ID,
+			tx.PublicKey,
+		}, []byte{},
+	)
+	return data
 }
