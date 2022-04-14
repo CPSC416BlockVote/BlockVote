@@ -6,7 +6,6 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
-	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"net/rpc"
@@ -172,7 +171,8 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 				// try to put it to the blockchain
 				success, _, _ := c.Blockchain.Put(*block, false)
 				if success {
-					log.Println("[INFO] Received valid block: height", block.BlockNum, " hash", fmt.Sprintf("%x", block.Hash))
+					log.Printf("[INFO] Received valid block #%d (%x) by %s\n", block.BlockNum, block.Hash[:5], block.MinerID)
+					blockchain.PrintBlock(block)
 				}
 			}
 		}
@@ -285,6 +285,8 @@ func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) erro
 	newNodeInfo := NodeInfo{Property: args.Info}
 	api.c.NodeList = append(api.c.NodeList, newNodeInfo)
 	gossip.AddPeer(newNodeInfo.Property.GossipAddr)
+	log.Printf("[INFO] New miner joined: %s (g: %s, co: %s, m: %s, cl:%s)", args.Info.MinerId,
+		args.Info.GossipAddr, args.Info.CoordListenAddr, args.Info.MinerMinerAddr, args.Info.ClientListenAddr)
 
 	// notify existing miners
 	var peerAddrList []string

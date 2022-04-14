@@ -7,12 +7,13 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
-	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"math"
+	"net/rpc"
 	"strings"
 	"sync"
+	"time"
 )
 
 type MinerConfig struct {
@@ -147,6 +148,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	log.Println("[INFO] Listen to miners' API requests at", m.Info.MinerMinerAddr)
 
 	// Miner join
+	log.Println("[INFO] Retrieving infomation from coord...")
 	coordClient, err := util.NewRPCClient(minerAddr, coordAddr)
 	if err != nil {
 		return errors.New("cannot create client for coord")
@@ -157,12 +159,16 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	if err != nil {
 		return errors.New("cannot download data from coord")
 	}
+
 	// setup candidates
+	log.Println("[INFO] Setting up candidates...")
 	for _, cand := range downloadReply.Candidates {
 		wallets := Identity.DecodeToWallets(cand)
 		m.Candidates = append(m.Candidates, *wallets)
 	}
+
 	// setup blockchain
+	log.Println("[INFO] Setting up blockchain...")
 	var candidates []*Identity.Wallets
 	for _, cand := range downloadReply.Candidates {
 		candidates = append(candidates, Identity.DecodeToWallets(cand))
@@ -172,22 +178,40 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	if err != nil {
 		return errors.New("cannot resume blockchain")
 	}
-	// setup txn pool
-	// ASSUME: the returned peer list cannot contain the miner itself
-	// TODO: loop throught the peer list of just choose one?
-	if len(downloadReply.PeerAddrList) > 0 {
-		toPullMinerAddr := downloadReply.PeerAddrList[0]
-		// get txn pool from the peer
-		// >> miner
-		minerClient, err := util.NewRPCClient(minerAddr, toPullMinerAddr)
-		if err != nil {
-			return errors.New("cannot create client for miner")
+
+	// setup txn pool (download from any of its peers)
+	log.Println("[INFO] Setting up memory pool...")
+	if len(downloadReply.PeerAddrList) > 0 { // only need to download txn pool if there are existing miners
+		for {
+			i := 0
+			for i < len(downloadReply.PeerAddrList) { // attempt to download txn pool from selected peer
+				// get txn pool from the peer
+				toPullMinerAddr := downloadReply.PeerAddrList[i]
+				minerClient, err := rpc.Dial("tcp", toPullMinerAddr)
+				if err != nil {
+					i++
+					continue
+				}
+				reply := GetTxnPoolReply{}
+				err = minerClient.Call("MinerAPIMiner.GetTxnPool", GetTxnPoolArgs{}, &reply)
+				if err != nil {
+					i++
+					continue
+				}
+				m.MemoryPool = reply.PeerTxnPool
+				break
+			}
+			if i == len(downloadReply.PeerAddrList) {
+				// TODO: if all peers failed, contact coord again for updated peer address list
+
+			} else {
+				break
+			}
 		}
-		reply := GetTxnPoolReply{}
-		minerClient.Call("MinerAPIMiner.GetTxnPool", GetTxnPoolArgs{}, &reply)
-		m.MemoryPool = reply.PeerTxnPool
 	}
+
 	// setup gossip client
+	log.Println("[INFO] Setting up gossip client...")
 	var existingUpdates []gossip.Update
 	blockchainData, _ := m.Blockchain.Encode()
 	for _, data := range blockchainData {
@@ -212,16 +236,20 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	m.updateChan = updateChan
 
 	// starting internal services
+	log.Println("[INFO] Starting routines...")
 	go m.TxnService()
 	go m.BlockService()
 	go m.MiningService()
 
+	log.Println("[INFO] Registering...")
 	reply := RegisterReply{}
 	err = coordClient.Call("CoordAPIMiner.Register", RegisterArgs{m.Info}, &reply)
 	if err != nil {
 		return errors.New("cannot register as miner")
 	}
 	gossip.SetPeers(reply.PeerGossipAddrList)
+
+	log.Printf("[INFO] %s joined successfully\n", minerId)
 	m.start = true
 	m.cond.Broadcast()
 	m.mu.Unlock()
@@ -275,7 +303,7 @@ func (m *Miner) BlockService() {
 					if bytes.Compare(prevLastHash, curLastHash) != 0 {
 						// new block is on the current chain
 						log.Printf("[INFO] New block (%x) from peers is added to the current chain\n", block.Hash[:5])
-						printBlock(block)
+						blockchain.PrintBlock(block)
 						// remove new block's txns from pool
 						for i := 0; i < len(m.MemoryPool.PendingTxns); {
 							rm := false
@@ -295,12 +323,12 @@ func (m *Miner) BlockService() {
 					} else {
 						// new block is not on the current chain, just ignore it
 						log.Printf("[INFO] New block (%x) from peers is added to an alternative fork\n", block.Hash[:5])
-						printBlock(block)
+						blockchain.PrintBlock(block)
 					}
 				} else {
 					// new longest chain!
 					log.Printf("[INFO] New block (%x) from peers is added to an alternative branch\n", block.Hash[:5])
-					printBlock(block)
+					blockchain.PrintBlock(block)
 					log.Println("[INFO] Switching to a new chain")
 					// first, add old txns that get kicked out b.c. it is not on the longest chain anymore
 					for _, oldTxn := range oldTxns {
@@ -335,6 +363,7 @@ func (m *Miner) MiningService() {
 	for !m.start {
 	}
 	newCycle := true
+	var cycleStartTime time.Time
 	var pow blockchain.ProofOfWork
 	for {
 		select {
@@ -347,6 +376,7 @@ func (m *Miner) MiningService() {
 				if newCycle {
 					// start a new mining cycle
 					m.mu.Lock() // lock to prevent new block put or new txn
+					cycleStartTime = time.Now()
 					newCycle = false
 					prevHash := m.Blockchain.GetLastHash()
 					// select txns from pool
@@ -400,8 +430,9 @@ func (m *Miner) MiningService() {
 								log.Println("[WARN] Local put causes unexpected fork switch")
 							}
 							if success {
-								log.Printf("[INFO] New block (%x) mined\n", block.Hash[:5])
-								printBlock(&block)
+								elapsed := time.Since(cycleStartTime).Seconds()
+								log.Printf("[INFO] New block (%x) mined in %v seconds\n", block.Hash[:5], elapsed)
+								blockchain.PrintBlock(&block)
 								// broadcast it first!
 								m.updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
 
@@ -468,16 +499,6 @@ func (m *Miner) updateBlockChainAndTxnPool(block blockchain.Block, own bool) {
 				m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
 			}
 		}
-	}
-}
-
-func printBlock(block *blockchain.Block) {
-	fmt.Printf("Block #%d (%x)\n", block.BlockNum, block.Hash[:5])
-	fmt.Printf("\tPrevHash:\t %x\n", block.PrevHash)
-	fmt.Printf("\tNonce:\t\t %d\n", block.Nonce)
-	fmt.Printf("\tTxns:\t\t %d\n", len(block.Txns))
-	for _, txn := range block.Txns {
-		fmt.Printf("\t    %s\t -> %s\n", txn.Data.VoterName, txn.Data.VoterCandidate)
 	}
 }
 

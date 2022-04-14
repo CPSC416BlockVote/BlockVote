@@ -53,7 +53,7 @@ func (pow *ProofOfWork) Next(delayed bool) (success bool) {
 	}
 
 	if delayed {
-		time.Sleep(40 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
 	return
 }

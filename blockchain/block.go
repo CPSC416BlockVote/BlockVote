@@ -3,6 +3,7 @@ package blockchain
 import (
 	"bytes"
 	"encoding/gob"
+	"fmt"
 	"log"
 )
 
@@ -50,3 +51,14 @@ func DecodeToBlock(data []byte) *Block {
 }
 
 // ----- Utility Functions -----
+
+func PrintBlock(block *Block) {
+	fmt.Printf("Block #%d (%x)\n", block.BlockNum, block.Hash[:5])
+	fmt.Printf("\tPrevHash:\t %x\n", block.PrevHash[:5])
+	fmt.Printf("\tNonce:\t\t %d\n", block.Nonce)
+	fmt.Printf("\tMinerID:\t %s\n", block.MinerID)
+	fmt.Printf("\tTxns:\t\t %d\n", len(block.Txns))
+	for _, txn := range block.Txns {
+		fmt.Printf("\t    %s\t -> %s\n", txn.Data.VoterName, txn.Data.VoterCandidate)
+	}
+}
