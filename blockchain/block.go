@@ -25,9 +25,7 @@ func (b *Block) Genesis() {
 	b.MinerID = "Coord"
 	// get nonce and hash from POW
 	pow := NewProof(b)
-	nonce, hash := pow.Run()
-	b.Nonce = nonce
-	b.Hash = hash
+	pow.Run()
 }
 
 // Encode encodes current block instance into bytes

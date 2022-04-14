@@ -1,12 +1,12 @@
 package blockvote
 
 import (
+	"bytes"
 	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
-	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"math"
@@ -26,6 +26,7 @@ type MinerConfig struct {
 }
 
 type MinerInfo struct {
+	MinerId          string
 	CoordListenAddr  string
 	MinerMinerAddr   string
 	ClientListenAddr string
@@ -73,9 +74,14 @@ type Miner struct {
 	ReceivedTxns map[string]bool
 	Candidates   []Identity.Wallets
 	MemoryPool   TxnPool
+	MaxTxn       uint8
 
 	queryChan  <-chan gossip.Update
 	updateChan chan<- gossip.Update
+
+	TxnRecvChan      chan *blockchain.Transaction
+	BlockRecvChan    chan *blockchain.Block
+	ChainUpdatedChan chan int
 
 	mu    sync.Mutex
 	cond  *sync.Cond
@@ -84,8 +90,11 @@ type Miner struct {
 
 func NewMiner() *Miner {
 	return &Miner{
-		Storage:      &util.Database{},
-		ReceivedTxns: make(map[string]bool),
+		Storage:          &util.Database{},
+		ReceivedTxns:     make(map[string]bool),
+		TxnRecvChan:      make(chan *blockchain.Transaction, 100),
+		BlockRecvChan:    make(chan *blockchain.Block, 50),
+		ChainUpdatedChan: make(chan int, 50),
 	}
 }
 
@@ -94,6 +103,8 @@ type TxnPool struct {
 }
 
 func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, difficulty uint8, maxTxn uint8, mtrace *tracing.Tracer) error {
+	m.MaxTxn = maxTxn
+	m.Info.MinerId = minerId
 	err := m.Storage.New("", true)
 	if err != nil {
 		util.CheckErr(err, "error when creating database")
@@ -199,6 +210,11 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	m.queryChan = queryChan
 	m.updateChan = updateChan
 
+	// starting internal services
+	go m.TxnService()
+	go m.BlockService()
+	go m.MiningService()
+
 	reply := RegisterReply{}
 	err = coordClient.Call("CoordAPIMiner.Register", RegisterArgs{m.Info}, &reply)
 	if err != nil {
@@ -209,61 +225,209 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	m.cond.Broadcast()
 	m.mu.Unlock()
 
-	// miner does proof-of-work forever
-	i := 0
+	// receive update from peers and notify respective service
 	for {
 		select {
-		case blockUpdate := <-queryChan:
-			if strings.Contains(blockUpdate.ID, BlockIDPrefix) {
-				block := *blockchain.DecodeToBlock(blockUpdate.Data)
-				m.updateBlockChainAndTxnPool(block, false)
-				m.updateChan <- blockUpdate
-			} else if strings.Contains(blockUpdate.ID, TransactionIDPrefix) {
-				err = minerAPIClient.SubmitTxn(SubmitTxnArgs{blockchain.DeserializeTransaction(blockUpdate.Data)}, &SubmitTxnReply{})
-				if err != nil {
-					return err
-				}
-			}
-		default:
-			prevHash := m.Blockchain.LastHash
-			if len(m.MemoryPool.PendingTxns) > 0 {
-				var selectedTxn []*blockchain.Transaction
-				m.selectTxn(selectedTxn, maxTxn)
-				fmt.Printf("Block #%d:\n", i+1)
-				block := blockchain.Block{
-					PrevHash: prevHash,
-					BlockNum: uint8(i + 1),
-					Nonce:    0,
-					Txns:     selectedTxn,
-					MinerID:  minerId,
-					Hash:     []byte{},
-				}
-				pow := blockchain.NewProof(&block)
-				nonce, hash := pow.Run()
-				block.Nonce = nonce
-				block.Hash = hash
-				prevHash = hash
-				updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
-
-				fmt.Printf("Nonce: %d\n", block.Nonce)
-				fmt.Printf("Hash: %x\n", block.Hash)
-				fmt.Println()
-				i++
-
-				m.updateBlockChainAndTxnPool(block, true)
+		case update := <-queryChan:
+			if strings.Contains(update.ID, BlockIDPrefix) {
+				m.BlockRecvChan <- blockchain.DecodeToBlock(update.Data)
+			} else if strings.Contains(update.ID, TransactionIDPrefix) {
+				txn := blockchain.DeserializeTransaction(update.Data)
+				m.TxnRecvChan <- &(txn)
 			}
 		}
 	}
 	return nil
 }
 
-func (m *Miner) selectTxn(selectedTxn []*blockchain.Transaction, maxTxn uint8) {
-	//m.mu.Lock()
-	//defer m.mu.Unlock()
-	i := 0
-	for ; i < int(math.Min(float64(maxTxn), float64(len(m.MemoryPool.PendingTxns)))); i++ {
+func (m *Miner) TxnService() {
+	for !m.start {
+		m.cond.Wait()
+	}
+	for {
+		txn := <-m.TxnRecvChan
+		m.mu.Lock()
+		sid := string(txn.ID)
+		// check if the txn is unseen
+		if !m.ReceivedTxns[sid] {
+			// add unseen txn to pool
+			m.ReceivedTxns[sid] = true
+			m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns, *txn)
+		}
+		m.mu.Unlock()
+	}
+}
+
+func (m *Miner) BlockService() {
+	for !m.start {
+		m.cond.Wait()
+	}
+	for {
+		block := <-m.BlockRecvChan
+		// verify proof of work
+		pow := blockchain.NewProof(block)
+		if pow.Validate() {
+			m.mu.Lock()
+			prevLastHash := m.Blockchain.GetLastHash()
+			success, newTxns, oldTxns := m.Blockchain.Put(*block, false)
+			curLastHash := m.Blockchain.GetLastHash()
+			if success {
+				if newTxns == nil { // no fork switching
+					if bytes.Compare(prevLastHash, curLastHash) != 0 {
+						// new block is on the current chain
+						// remove new block's txns from pool
+						for i := 0; i < len(m.MemoryPool.PendingTxns); {
+							rm := false
+							for j := 0; j < len(block.Txns); j++ {
+								if bytes.Compare(m.MemoryPool.PendingTxns[i].ID, block.Txns[j].ID) == 0 {
+									rm = true
+								}
+							}
+							if rm {
+								m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
+							} else {
+								i++
+							}
+						}
+						// notify mining service of new last hash
+						m.ChainUpdatedChan <- 1
+					} else {
+						// new block is not on the current chain, just ignore it
+					}
+				} else {
+					// new longest chain!
+					// first, add old txns that get kicked out b.c. it is not on the longest chain anymore
+					for _, oldTxn := range oldTxns {
+						m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns, *oldTxn)
+					}
+					// then, remove new transactions in the new fork from pool
+					// this includes the txns that are in the new block
+					// NOTE: this must be done second as there may be overlap between the two sets of txns
+					for i := 0; i < len(m.MemoryPool.PendingTxns); {
+						rm := false
+						for j := 0; j < len(newTxns); j++ {
+							if bytes.Compare(m.MemoryPool.PendingTxns[i].ID, newTxns[j].ID) == 0 {
+								rm = true
+							}
+						}
+						if rm {
+							m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
+						} else {
+							i++
+						}
+					}
+					// notify mining service of new last hash
+					m.ChainUpdatedChan <- 1
+				}
+			}
+			m.mu.Unlock()
+		}
+	}
+}
+
+func (m *Miner) MiningService() {
+	for !m.start {
+		m.cond.Wait()
+	}
+	newCycle := true
+	var pow blockchain.ProofOfWork
+	for {
+		select {
+		case <-m.ChainUpdatedChan:
+			{
+				newCycle = true
+			}
+		default:
+			{
+				if newCycle {
+					// start a new mining cycle
+					m.mu.Lock() // lock to prevent new block put or new txn
+					newCycle = false
+					prevHash := m.Blockchain.GetLastHash()
+					// select txns from pool
+					selectedTxns := m.selectTxns()
+					// validate txns
+					valids := m.Blockchain.ValidateTxns(selectedTxns)
+					var validatedTxns []*blockchain.Transaction
+					var invalidTxid [][]byte
+					// only include valid txns
+					for idx, valid := range valids {
+						if valid {
+							validatedTxns = append(validatedTxns, selectedTxns[idx])
+						} else {
+							invalidTxid = append(invalidTxid, selectedTxns[idx].ID)
+						}
+					}
+					// remove invalid txns from pool
+					for i := 0; i < len(m.MemoryPool.PendingTxns) && len(invalidTxid) > 0; {
+						if bytes.Compare(invalidTxid[0], m.MemoryPool.PendingTxns[i].ID) == 0 {
+							invalidTxid = append(invalidTxid[:0], invalidTxid[1:]...)
+							m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
+						} else {
+							i++
+						}
+					}
+					// construct current block
+					height := m.Blockchain.Get(m.Blockchain.GetLastHash()).BlockNum + 1
+					block := blockchain.Block{
+						PrevHash: prevHash,
+						BlockNum: height,
+						Nonce:    0,
+						Txns:     validatedTxns,
+						MinerID:  m.Info.MinerId,
+						Hash:     []byte{},
+					}
+					// create a proof of work instance
+					pow = *blockchain.NewProof(&block)
+					m.mu.Unlock()
+				} else {
+					// continue mining
+					if pow.Next(true) { // new block mined
+						m.mu.Lock() // lock to prevent concurrent chain update and other things
+						// if there is already a chain update, just discard the new block. Otherwise, safe to put
+						if len(m.ChainUpdatedChan) == 0 { // no chain update
+							block := *pow.Block
+
+							// try to put new block
+							success, newTxns, oldTxns := m.Blockchain.Put(block, true)
+							// if there is no chain update since the start of this mining cycle, then fork switch impossible
+							if newTxns != nil || oldTxns != nil { // sanity check
+								log.Println("[WARN] Local put causes unexpected fork switch")
+							}
+							if success {
+								// broadcast it first!
+								m.updateChan <- gossip.NewUpdate(BlockIDPrefix, block.Hash, block.Encode())
+
+								// remove included txns from pending pool
+								for i := 0; i < len(m.MemoryPool.PendingTxns); {
+									rm := false
+									for j := 0; j < len(block.Txns); j++ {
+										if bytes.Compare(m.MemoryPool.PendingTxns[i].ID, block.Txns[j].ID) == 0 {
+											rm = true
+										}
+									}
+									if rm {
+										m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
+									} else {
+										i++
+									}
+								}
+							}
+						}
+						m.mu.Unlock()
+						newCycle = true
+					}
+				}
+			}
+		}
+	}
+}
+
+func (m *Miner) selectTxns() (selectedTxn []*blockchain.Transaction) {
+	for i := 0; i < int(math.Min(float64(m.MaxTxn), float64(len(m.MemoryPool.PendingTxns)))); i++ {
 		selectedTxn = append(selectedTxn, &m.MemoryPool.PendingTxns[i])
 	}
+	return
 }
 
 func (m *Miner) updateBlockChainAndTxnPool(block blockchain.Block, own bool) {
@@ -322,20 +486,12 @@ type MinerAPIClient struct {
 	m *Miner
 }
 
+// SubmitTxn is for client to submit a transaction. This function is non-blocking.
 func (api *MinerAPIClient) SubmitTxn(args SubmitTxnArgs, reply *SubmitTxnReply) error {
-	api.m.mu.Lock()
-	for !api.m.start {
-		api.m.cond.Wait()
-	}
-	defer api.m.mu.Unlock()
-	if api.m.Blockchain.ValidateTxn(&args.Txn) {
-		sid := string(args.Txn.ID)
-		if !api.m.ReceivedTxns[sid] {
-			api.m.ReceivedTxns[sid] = true
-			api.m.MemoryPool.PendingTxns = append(api.m.MemoryPool.PendingTxns, args.Txn)
-			api.m.updateChan <- gossip.NewUpdate(TransactionIDPrefix, args.Txn.ID, args.Txn.Serialize())
-		}
-	}
+	// internal processing
+	api.m.TxnRecvChan <- &(args.Txn)
+	// broadcast
+	api.m.updateChan <- gossip.NewUpdate(TransactionIDPrefix, args.Txn.ID, args.Txn.Serialize())
 
 	return nil
 }

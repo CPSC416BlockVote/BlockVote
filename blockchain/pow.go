@@ -22,31 +22,42 @@ const NumZeros = 8
 func NewProof(b *Block) *ProofOfWork {
 	target := big.NewInt(1)
 	target.Lsh(target, uint(256-NumZeros))
-	//fmt.Printf("Target: %x\n", target)
+	b.Nonce = 0
+	b.Hash = []byte{}
 	pow := &ProofOfWork{b, target}
 	return pow
 }
 
 // Run executes proof of work to find the nonce that makes block hash has NumZeros leading zeros
-func (pow *ProofOfWork) Run() (uint32, []byte) {
+func (pow *ProofOfWork) Run() {
+	for pow.Block.Nonce < math.MaxUint32 {
+		if pow.Next(false) {
+			break
+		}
+	}
+}
+
+func (pow *ProofOfWork) Next(delayed bool) (success bool) {
 	var hash [32]byte
 	var intHash big.Int
 
-	nonce := uint32(0)
-	for nonce < math.MaxUint32 {
-		data := pow.BlockToBytes(nonce)
-		hash = sha256.Sum256(data)
-		intHash.SetBytes(hash[:])
-		if intHash.Cmp(pow.Target) == -1 { // find the nonce
-			break
-		} else {
-			nonce++
-			time.Sleep(20 * time.Millisecond)
-		}
+	data := pow.BlockToBytes(pow.Block.Nonce)
+	hash = sha256.Sum256(data)
+	intHash.SetBytes(hash[:])
+
+	if intHash.Cmp(pow.Target) == -1 { // find the nonce
+		success = true
+		pow.Block.Hash = hash[:]
+	} else {
+		success = false
+		pow.Block.Hash = hash[:]
+		pow.Block.Nonce++
 	}
-	//fmt.Printf("Nonce: %v\n", nonce)
-	//fmt.Printf("Hash: %x\n", hash)
-	return nonce, hash[:]
+
+	if delayed {
+		time.Sleep(20 * time.Millisecond)
+	}
+	return
 }
 
 // Validate checks whether the nonce is correct
