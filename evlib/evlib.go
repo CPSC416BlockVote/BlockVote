@@ -42,11 +42,15 @@ func NewEV() *EV {
 }
 
 // ----- evlib APIs -----
+type VoterNameID struct {
+	Name	string
+	ID		string
+}
 var quit chan bool
-
+var voterInfo []VoterNameID
 // Start Starts the instance of EV to use for connecting to the system with the given coord's IP:port.
 func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort string, localCoordIPPort string, localMinerIPPort string, N_Receives int) error {
-
+	voterInfo = make([]VoterNameID, 0)
 	// setup conn to coord
 	lcAddr, err := net.ResolveTCPAddr("tcp", localCoordIPPort)
 	if err != nil {
@@ -75,6 +79,7 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	d.coordClient = coordClient
 	d.localMinerListenerAddr = lmAddr
 	d.N_Receives = N_Receives
+
 
 	// get candidates from Coord
 	var candidatesReply *blockvote.GetCandidatesReply
@@ -160,7 +165,15 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	}
 	return nil
 }
-
+// helper function for checking the existence of voter
+func findVoterExist(from, to string) bool {
+	for _, v := range voterInfo {
+		if v.Name == from && v.ID == to {
+			return true
+		}
+	}
+	return false
+}
 // Vote API provides the functionality of voting
 func (d *EV) Vote(from, fromID, to string) ([]byte, error) {
 
@@ -169,8 +182,15 @@ func (d *EV) Vote(from, fromID, to string) ([]byte, error) {
 		VoterStudentID: fromID,
 		VoterCandidate: to,
 	}
-	// create wallet for voter
-	d.createVoterWallet(ballot)
+	// create wallet for voter, only when such voter is not exist
+	if !findVoterExist(from, fromID) {
+		d.createVoterWallet(ballot)
+		voterInfo = append(voterInfo, VoterNameID{
+			Name: from,
+			ID:   to,
+		})
+	}
+
 
 	// create transaction
 	txn := d.createTransaction(ballot)
