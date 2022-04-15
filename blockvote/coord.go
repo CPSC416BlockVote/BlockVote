@@ -4,17 +4,20 @@ import (
 	"bytes"
 	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
+	fchecker "cs.ubc.ca/cpsc416/BlockVote/fcheck"
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"encoding/gob"
 	"errors"
 	"github.com/DistributedClocks/tracing"
 	"log"
+	"math/rand"
 	"net/rpc"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -146,6 +149,23 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	// 1.4 NodeList
 	c.InitNodeList(resume)
 
+	// fcheck
+	var remoteAckIPPortList []string
+	remoteAckIPPortList = []string{} // make it not nil
+	for _, node := range c.NodeList {
+		remoteAckIPPortList = append(remoteAckIPPortList, node.Property.AckAddr)
+	}
+	_, notifyCh, err := fchecker.Start(fchecker.StartStruct{
+		LocalIP:                          coordIp,
+		EpochNonce:                       rand.New(rand.NewSource(time.Now().UnixNano())).Uint64(),
+		HBeatRemoteIPHBeatRemotePortList: remoteAckIPPortList,
+		LostMsgThresh:                    6,
+	})
+	if err != nil {
+		return err
+	}
+	go c.Tracker(notifyCh)
+
 	// >> miner
 	coordAPIMiner := new(CoordAPIMiner)
 	coordAPIMiner.c = c
@@ -204,9 +224,37 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	//return nil
 }
 
-func (c *Coord) Tracker() {
+func (c *Coord) Tracker(notifyCh <-chan fchecker.FailureDetected) {
 	for {
-		select {}
+		select {
+		case failure := <-notifyCh:
+			{
+				c.nlMu.Lock()
+				for idx, node := range c.NodeList {
+					if node.Property.AckAddr == failure.UDPIpPort {
+						// remove from disk first
+						c.Storage.Remove(util.DBKeyWithPrefix(NodeKeyPrefix, []byte(node.Property.MinerId)))
+						// remove from node list
+						c.NodeList = append(c.NodeList[:idx], c.NodeList[idx+1:]...)
+						// close conn and remove from conn list
+						if c.MinerConns[idx] != nil {
+							c.MinerConns[idx].Close()
+						}
+						c.MinerConns = append(c.MinerConns[:idx], c.MinerConns[idx+1:]...)
+						break
+					}
+				}
+				// construct new gossip list
+				var peerGossipAddrList = []string{c.GossipAddr} // coord's gossip addr will always be the first!
+				for _, info := range c.NodeList {
+					peerGossipAddrList = append(peerGossipAddrList, info.Property.GossipAddr)
+				}
+				gossip.SetPeers(peerGossipAddrList)
+				c.nlMu.Unlock()
+			}
+		default:
+			continue
+		}
 	}
 }
 
@@ -295,6 +343,7 @@ func (c *Coord) InitNodeList(resume bool) {
 }
 
 func (c *Coord) NotifyMiners() {
+	// NOTE: node list should be locked in the function that invokes this function
 	var peerAddrList []string
 	var peerGossipAddrList = []string{c.GossipAddr} // coord's gossip addr will always be the first!
 	for _, info := range c.NodeList {
@@ -327,7 +376,9 @@ func (api *CoordAPIMiner) Download(args DownloadArgs, reply *DownloadReply) erro
 	// prepare reply data
 	encodedBlockchain, lastHash := api.c.Blockchain.Encode()
 	var peerAddrList []string
+	api.c.nlMu.Lock()
 	nodeList := api.c.NodeList[:]
+	api.c.nlMu.Unlock()
 	for _, info := range nodeList {
 		peerAddrList = append(peerAddrList, info.Property.MinerMinerAddr)
 	}
@@ -373,6 +424,10 @@ func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) erro
 	api.c.MinerConns = append(api.c.MinerConns, minerConn)
 
 	gossip.AddPeer(newNodeInfo.Property.GossipAddr)
+	err = fchecker.NewRemote(newNodeInfo.Property.AckAddr)
+	if err != nil {
+		log.Println("[WARN] fcheck is unable to connect to miner at", newNodeInfo.Property.AckAddr)
+	}
 	log.Printf("[INFO] New miner joined: %s (g: %s, co: %s, m: %s, cl:%s)", args.Info.MinerId,
 		args.Info.GossipAddr, args.Info.CoordListenAddr, args.Info.MinerMinerAddr, args.Info.ClientListenAddr)
 

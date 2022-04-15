@@ -49,9 +49,8 @@ type FailureDetected struct {
 ////////////////////////////////////////////////////// API
 
 type StartStruct struct {
-	AckLocalIP                       string
+	LocalIP                          string
 	EpochNonce                       uint64
-	HBeatLocalIP                     string
 	HBeatRemoteIPHBeatRemotePortList []string
 	LostMsgThresh                    uint8
 }
@@ -60,6 +59,12 @@ type StartStruct struct {
 var stop chan int // signal go routines to stop
 var mu sync.Mutex
 var nRoutines int // indicate the number of routines fcheck lib currently runs
+
+// cache
+var localHBAddr *net.UDPAddr
+var epochNonce uint64
+var lostMsgThresh uint8
+var notify chan FailureDetected
 
 // Starts the fcheck library.
 
@@ -70,23 +75,22 @@ func Start(arg StartStruct) (ackLocalPort string, notifyCh <-chan FailureDetecte
 		return "", nil, errors.New("fcheck library has already been started")
 	}
 	// resolve local ack address
-	arg.AckLocalIP += ":0"
-	localAckAddr, err := net.ResolveUDPAddr("udp", arg.AckLocalIP)
+	localAckAddr, err := net.ResolveUDPAddr("udp", arg.LocalIP+":0")
 	if err != nil { // check inappropriate ip:port values
-		return "", nil, errors.New("invalid ip:port for local ack address: " + arg.AckLocalIP)
+		return "", nil, errors.New("invalid ip for local ack address: " + arg.LocalIP)
 	}
 
 	// open local ack udp port
 	ackConn, err := net.ListenUDP("udp", localAckAddr)
 	if err != nil {
-		return "", nil, errors.New("unable to listen udp at " + arg.AckLocalIP)
+		return "", nil, errors.New("unable to listen udp at " + arg.LocalIP)
 	}
 	ackLocalPort = strconv.Itoa(ackConn.LocalAddr().(*net.UDPAddr).Port)
 
 	// create signal channel for stopping
 	stop = make(chan int, len(arg.HBeatRemoteIPHBeatRemotePortList))
 
-	if arg.HBeatLocalIP == "" {
+	if arg.HBeatRemoteIPHBeatRemotePortList == nil {
 		// ONLY arg.AckLocalIP is set
 		//
 		// Start fcheck without monitoring any node, but responding to heartbeats.
@@ -99,46 +103,59 @@ func Start(arg StartStruct) (ackLocalPort string, notifyCh <-chan FailureDetecte
 	// Start the fcheck library by monitoring a single node and
 	// also responding to heartbeats.
 
+	epochNonce = arg.EpochNonce
+	lostMsgThresh = arg.LostMsgThresh
+
 	// TODO
 	// resolve addresses
-	arg.HBeatLocalIP += ":0"
-	localHBAddr, err := net.ResolveUDPAddr("udp", arg.HBeatLocalIP)
+	localHBAddr, err = net.ResolveUDPAddr("udp", arg.LocalIP+":0")
 	if err != nil {
 		ackConn.Close()
-		return "", nil, errors.New("invalid ip:port for local udp address: " + arg.HBeatLocalIP)
+		return "", nil, errors.New("invalid ip for local udp address: " + arg.LocalIP)
 	}
 	var hbConns []*net.UDPConn
 	for _, remoteIPPort := range arg.HBeatRemoteIPHBeatRemotePortList {
 		remoteHBAddr, err := net.ResolveUDPAddr("udp", remoteIPPort)
 		if err != nil {
-			ackConn.Close()
-			for _, hbConn := range hbConns {
-				hbConn.Close()
-			}
-			return "", nil, errors.New("invalid ip:port for remote udp address: " + remoteIPPort)
+			log.Println("[WARN] fcheck is unable to resolve address", remoteIPPort)
+			continue
 		}
 		// dial udp
 		hbConn, err := net.DialUDP("udp", localHBAddr, remoteHBAddr)
 		if err != nil {
-			ackConn.Close()
-			for _, hbConn := range hbConns {
-				hbConn.Close()
-			}
-			return "", nil, errors.New("unable to dial udp: " + arg.HBeatLocalIP + " -> " + remoteIPPort)
+			log.Println("[WARN] fcheck is unable to dial", remoteIPPort)
+			continue
 		}
 		hbConns = append(hbConns, hbConn)
 	}
 
-	notify := make(chan FailureDetected, len(arg.HBeatRemoteIPHBeatRemotePortList)) // must have capacity of at least 1
+	notify = make(chan FailureDetected, 100) // must have capacity of at least 1
 	go Respond(ackConn)
 	for idx, hbConn := range hbConns {
-		go Monitor(hbConn, arg.EpochNonce, arg.LostMsgThresh, arg.HBeatRemoteIPHBeatRemotePortList[idx], notify)
+		go Monitor(hbConn, arg.HBeatRemoteIPHBeatRemotePortList[idx], notify)
 	}
 
 	return ackLocalPort, notify, nil
 }
 
-func Monitor(conn *net.UDPConn, epochNonce uint64, lostMsgThresh uint8, remoteIpPort string, notifyCh chan<- FailureDetected) {
+func NewRemote(remoteIpPort string) error {
+	if nRoutines == 0 {
+		return errors.New("fcheck is not started")
+	}
+	remoteHBAddr, err := net.ResolveUDPAddr("udp", remoteIpPort)
+	if err != nil {
+		return errors.New("fcheck is unable to resolve address " + remoteIpPort)
+	}
+	// dial udp
+	hbConn, err := net.DialUDP("udp", localHBAddr, remoteHBAddr)
+	if err != nil {
+		return errors.New("fcheck is unable to dial " + remoteIpPort)
+	}
+	go Monitor(hbConn, remoteIpPort, notify)
+	return nil
+}
+
+func Monitor(conn *net.UDPConn, remoteIpPort string, notifyCh chan<- FailureDetected) {
 	mu.Lock()
 	nRoutines++
 	mu.Unlock()

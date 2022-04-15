@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
+	fchecker "cs.ubc.ca/cpsc416/BlockVote/fcheck"
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
@@ -33,6 +34,7 @@ type MinerInfo struct {
 	MinerMinerAddr   string
 	ClientListenAddr string
 	GossipAddr       string
+	AckAddr          string
 }
 
 // messages
@@ -146,6 +148,16 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	}
 	m.Info.MinerMinerAddr = minerMinerAddr
 	log.Println("[INFO] Listen to miners' API requests at", m.Info.MinerMinerAddr)
+
+	// fcheck
+	ackPort, _, err := fchecker.Start(fchecker.StartStruct{
+		LocalIP: minerIP,
+	})
+	if err != nil {
+		return errors.New("cannot start fcheck")
+	}
+	m.Info.AckAddr = minerIP + ":" + ackPort
+	defer fchecker.Stop()
 
 	// Miner join
 	log.Println("[INFO] Retrieving infomation from coord...")
