@@ -1,10 +1,12 @@
 package blockvote
 
 import (
+	"bytes"
 	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
+	"encoding/gob"
 	"errors"
 	"github.com/DistributedClocks/tracing"
 	"log"
@@ -18,6 +20,7 @@ import (
 const (
 	NCandidatesKey      = "NCandidates"
 	CandidateKeyPrefix  = "cand-"
+	NodeKeyPrefix       = "node-"
 	BlockIDPrefix       = "block-"
 	TransactionIDPrefix = "txn-"
 )
@@ -120,7 +123,6 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	c.InitCandidates(nCandidates, resume)
 	// 1.3 Blockchain
 	c.InitBlockchain(resume)
-	// TODO: 1.4 NodeList
 
 	// 2. Starting API services
 	coordIp := minerAPIListenAddr[0:strings.Index(minerAPIListenAddr, ":")]
@@ -141,6 +143,8 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 		return err
 	}
 	c.GossipAddr = gossipAddr
+	// 1.4 NodeList
+	c.InitNodeList(resume)
 
 	// >> miner
 	coordAPIMiner := new(CoordAPIMiner)
@@ -169,10 +173,25 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 			// check if it is an unseen block
 			if !c.Blockchain.Exist(block.Hash) {
 				// try to put it to the blockchain
-				success, _, _ := c.Blockchain.Put(*block, false)
+				prevLastHash := c.Blockchain.GetLastHash()
+				success, switched, _ := c.Blockchain.Put(*block, false)
+				curLastHash := c.Blockchain.GetLastHash()
 				if success {
 					log.Printf("[INFO] Received valid block #%d (%x) by %s\n", block.BlockNum, block.Hash[:5], block.MinerID)
 					blockchain.PrintBlock(block)
+					if switched == nil {
+						if bytes.Compare(prevLastHash, curLastHash) != 0 {
+							log.Println("[INFO] Added new block to the current chain")
+						} else {
+							log.Println("[INFO] Added new block to an alternative chain")
+						}
+					} else {
+						log.Println("[INFO] Added new block to an alternative chain")
+						log.Println("[INFO] Switching to a new chain")
+					}
+
+				} else {
+					log.Printf("[WARN] Rejected invalid block #%d (%x) by %s\n", block.BlockNum, block.Hash[:5], block.MinerID)
 				}
 			}
 		}
@@ -247,6 +266,56 @@ func (c *Coord) InitCandidates(nCandidates uint8, resume bool) {
 	}
 }
 
+func (c *Coord) InitNodeList(resume bool) {
+	if resume {
+		values, err := c.Storage.GetAllWithPrefix(NodeKeyPrefix)
+		util.CheckErr(err, "[ERROR] error reloading node list")
+		for _, val := range values {
+			node := NodeInfo{}
+			err := gob.NewDecoder(bytes.NewReader(val)).Decode(&node)
+			if err != nil {
+				log.Println("[ERROR] unable to decode node info")
+				log.Fatal(err)
+			}
+			// reconstruct node list
+			c.NodeList = append(c.NodeList, node)
+			// re-add gossip peer
+			gossip.AddPeer(node.Property.GossipAddr)
+			// reconnect
+			minerConn, err := rpc.Dial("tcp", node.Property.CoordListenAddr)
+			if err != nil {
+				// silently digest error
+				log.Println("[WARN] cannot connect to miner at", node.Property.CoordListenAddr)
+			}
+			c.MinerConns = append(c.MinerConns, minerConn)
+		}
+		// notify miners of gossip peers (b.c. gossip addr at coord changes)
+		c.NotifyMiners()
+	}
+}
+
+func (c *Coord) NotifyMiners() {
+	var peerAddrList []string
+	var peerGossipAddrList = []string{c.GossipAddr} // coord's gossip addr will always be the first!
+	for _, info := range c.NodeList {
+		peerAddrList = append(peerAddrList, info.Property.MinerMinerAddr)
+		peerGossipAddrList = append(peerGossipAddrList, info.Property.GossipAddr)
+	}
+	for _, minerConn := range c.MinerConns {
+		if minerConn != nil {
+			args := NotifyPeerListArgs{
+				PeerAddrList:       peerAddrList,
+				PeerGossipAddrList: peerGossipAddrList,
+			}
+			reply := NotifyPeerListReply{}
+			err := minerConn.Call("MinerAPICoord.NotifyPeerList", args, &reply)
+			if err != nil {
+				log.Println("[WARN] Unable to notify a miner")
+			}
+		}
+	}
+}
+
 // ----- APIs for miner -----
 
 type CoordAPIMiner struct {
@@ -284,27 +353,16 @@ func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) erro
 	// add new miner to list
 	newNodeInfo := NodeInfo{Property: args.Info}
 	api.c.NodeList = append(api.c.NodeList, newNodeInfo)
-	gossip.AddPeer(newNodeInfo.Property.GossipAddr)
-	log.Printf("[INFO] New miner joined: %s (g: %s, co: %s, m: %s, cl:%s)", args.Info.MinerId,
-		args.Info.GossipAddr, args.Info.CoordListenAddr, args.Info.MinerMinerAddr, args.Info.ClientListenAddr)
+	// write to disk first
+	var buf bytes.Buffer
+	err := gob.NewEncoder(&buf).Encode(newNodeInfo)
+	if err != nil {
+		log.Println("[WARN] node info encode error")
+	}
+	api.c.Storage.Put(util.DBKeyWithPrefix(NodeKeyPrefix, []byte(args.Info.MinerId)), buf.Bytes())
 
 	// notify existing miners
-	var peerAddrList []string
-	var peerGossipAddrList = []string{api.c.GossipAddr} // coord's gossip addr will always be the first!
-	for _, info := range api.c.NodeList {
-		peerAddrList = append(peerAddrList, info.Property.MinerMinerAddr)
-		peerGossipAddrList = append(peerGossipAddrList, info.Property.GossipAddr)
-	}
-	for _, minerConn := range api.c.MinerConns {
-		if minerConn != nil {
-			args := NotifyPeerListArgs{
-				PeerAddrList:       peerAddrList,
-				PeerGossipAddrList: peerGossipAddrList,
-			}
-			reply := NotifyPeerListReply{}
-			go minerConn.Call("MinerAPICoord.NotifyPeerList", args, &reply)
-		}
-	}
+	api.c.NotifyMiners() // this will not notify current miner as conn not established
 
 	// add rpc connection
 	minerConn, err := rpc.Dial("tcp", newNodeInfo.Property.CoordListenAddr)
@@ -314,7 +372,17 @@ func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) erro
 	}
 	api.c.MinerConns = append(api.c.MinerConns, minerConn)
 
+	gossip.AddPeer(newNodeInfo.Property.GossipAddr)
+	log.Printf("[INFO] New miner joined: %s (g: %s, co: %s, m: %s, cl:%s)", args.Info.MinerId,
+		args.Info.GossipAddr, args.Info.CoordListenAddr, args.Info.MinerMinerAddr, args.Info.ClientListenAddr)
+
 	// prepare reply data
+	var peerAddrList []string
+	var peerGossipAddrList = []string{api.c.GossipAddr} // coord's gossip addr will always be the first!
+	for _, info := range api.c.NodeList {
+		peerAddrList = append(peerAddrList, info.Property.MinerMinerAddr)
+		peerGossipAddrList = append(peerGossipAddrList, info.Property.GossipAddr)
+	}
 	*reply = RegisterReply{
 		PeerAddrList:       peerAddrList,
 		PeerGossipAddrList: peerGossipAddrList,

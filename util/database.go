@@ -128,6 +128,21 @@ func (db *Database) GetAllWithPrefix(prefix string) (values [][]byte, err error)
 	return values, err
 }
 
+func (db *Database) Remove(key []byte) error {
+	if !db.Opened() {
+		return errors.New("no database instance has been created")
+	}
+
+	err := db.instance.Update(func(txn *badger.Txn) error {
+		err := txn.Delete(key)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	return err
+}
+
 func (db *Database) New(dbPath string, inMemory bool) error {
 	if db.Opened() {
 		return errors.New("database instance already created")

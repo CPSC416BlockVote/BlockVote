@@ -356,6 +356,7 @@ func PushService() {
 							_ = conn.Call("RPCHandler.Retransmit", args, &reply)
 						}
 					} else if mode == "PushPull" {
+						time.Sleep(time.Duration(rand.New(rand.NewSource(time.Now().UnixNano())).Intn(5000)) * time.Millisecond)
 						args := PushPullArgs{
 							Identity:  identity,
 							Update:    pendingPush.Update,
