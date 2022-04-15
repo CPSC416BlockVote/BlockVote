@@ -43,11 +43,13 @@ func NewEV() *EV {
 
 // ----- evlib APIs -----
 type VoterNameID struct {
-	Name	string
-	ID		string
+	Name string
+	ID   string
 }
+
 var quit chan bool
 var voterInfo []VoterNameID
+
 // Start Starts the instance of EV to use for connecting to the system with the given coord's IP:port.
 func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort string, localCoordIPPort string, localMinerIPPort string, N_Receives int) error {
 	voterInfo = make([]VoterNameID, 0)
@@ -79,7 +81,6 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	d.coordClient = coordClient
 	d.localMinerListenerAddr = lmAddr
 	d.N_Receives = N_Receives
-
 
 	// get candidates from Coord
 	var candidatesReply *blockvote.GetCandidatesReply
@@ -137,18 +138,26 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	txnID := []byte("")
 	for i := 0; i < len(voterNames); i++ {
 		ballot := blockChain.Ballot{
-			voterNames[rand.Intn(9)],
-			voterIDs[rand.Intn(9)],
-			d.candidateList[rand.Intn(9)],
+			voterNames[i],
+			voterIDs[i],
+			d.candidateList[rand.Intn(10)],
+		}
+		if i == 0 {
+			txnID, err = d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+			if err != nil {
+				return err
+			}
 		}
 		fmt.Println(ballot)
-		txnID, err = d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+		_, err = d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
 		if err != nil {
 			return err
 		}
 	}
-	time.Sleep(30 * time.Second)
-	// query how many confirmed txn based on last txnID in the loop
+
+	fmt.Println(txnID)
+	time.Sleep(90 * time.Second)
+	// query which block has confirmed txn with first txnID in the loop
 	numConfirmed, err := d.GetBallotStatus(txnID)
 	if err != nil {
 		return err
@@ -156,15 +165,15 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	fmt.Println("num of Confirmed txn: ", numConfirmed)
 	// query how many confirmed txn based on last txnID in the loop
 	for i := 0; i < len(d.candidateList); i++ {
-		fmt.Println("checking ", d.candidateList[i])
 		voters, err := d.GetCandVotes(d.candidateList[i])
 		if err != nil {
 			return err
 		}
-		fmt.Println(voters)
+		fmt.Println("checking ", d.candidateList[i], " : ", voters)
 	}
 	return nil
 }
+
 // helper function for checking the existence of voter
 func findVoterExist(from, to string) bool {
 	for _, v := range voterInfo {
@@ -174,6 +183,7 @@ func findVoterExist(from, to string) bool {
 	}
 	return false
 }
+
 // Vote API provides the functionality of voting
 func (d *EV) Vote(from, fromID, to string) ([]byte, error) {
 
@@ -190,7 +200,6 @@ func (d *EV) Vote(from, fromID, to string) ([]byte, error) {
 			ID:   to,
 		})
 	}
-
 
 	// create transaction
 	txn := d.createTransaction(ballot)
