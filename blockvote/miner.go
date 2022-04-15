@@ -454,6 +454,7 @@ func (m *Miner) MiningService() {
 									for j := 0; j < len(block.Txns); j++ {
 										if bytes.Compare(m.MemoryPool.PendingTxns[i].ID, block.Txns[j].ID) == 0 {
 											rm = true
+											break
 										}
 									}
 									if rm {
@@ -462,6 +463,7 @@ func (m *Miner) MiningService() {
 										i++
 									}
 								}
+								log.Printf("[INFO] Pool size %d\n", len(m.MemoryPool.PendingTxns))
 							}
 						}
 						m.mu.Unlock()
@@ -475,7 +477,8 @@ func (m *Miner) MiningService() {
 
 func (m *Miner) selectTxns() (selectedTxn []*blockchain.Transaction) {
 	for i := 0; i < int(math.Min(float64(m.MaxTxn), float64(len(m.MemoryPool.PendingTxns)))); i++ {
-		selectedTxn = append(selectedTxn, &m.MemoryPool.PendingTxns[i])
+		txn := m.MemoryPool.PendingTxns[i] // make a copy first. avoid pointing to the slot in slice.
+		selectedTxn = append(selectedTxn, &txn)
 	}
 	return
 }
