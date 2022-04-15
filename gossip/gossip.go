@@ -160,6 +160,18 @@ func AddPeer(peer string) {
 	}
 }
 
+func RemovePeer(peer string) {
+	rw.Lock()
+	defer rw.Unlock()
+	for idx, addr := range PeerList { // coord can also be removed, as it will send its new addr when it re-start
+		if addr == peer {
+			PeerList = append(PeerList[:idx], PeerList[idx+1:]...)
+			Verbose("peer (" + peer + ") is detected as failed and is removed.")
+			break
+		}
+	}
+}
+
 func NewUpdate(prefix string, hash []byte, data []byte) Update {
 	return Update{
 		ID:   prefix + fmt.Sprintf("%x", hash),
@@ -329,7 +341,9 @@ func PushService() {
 			for _, peer := range selectedPeers {
 				go func(peerAddr string) {
 					conn, err := rpc.Dial("tcp", peerAddr)
-					if err != nil {
+					if err != nil || conn == nil {
+						// peer failed. remove peer
+						RemovePeer(peerAddr)
 						return
 					}
 					Verbose("pushing... (#" + pendingPush.Update.ID + ", " + peerAddr + ")")
@@ -342,6 +356,8 @@ func PushService() {
 						reply := PushReply{}
 						err = conn.Call("RPCHandler.Push", args, &reply)
 						if err != nil {
+							// peer failed. remove peer
+							RemovePeer(peerAddr)
 							return
 						}
 						// check if peer request retransmit
@@ -365,6 +381,8 @@ func PushService() {
 						reply := PushPullReply{}
 						err = conn.Call("RPCHandler.PushPull", args, &reply)
 						if err != nil {
+							// peer failed. remove peer
+							RemovePeer(peerAddr)
 							return
 						}
 						// add pulled updates first
@@ -413,7 +431,7 @@ func PullService() {
 			for _, peer := range selectedPeers {
 				go func(peerAddr string) {
 					conn, err := rpc.Dial("tcp", peerAddr)
-					if err != nil {
+					if err != nil || conn == nil {
 						Verbose("pull failed (" + peerAddr + ")")
 						replyChan <- []Update{}
 						return
