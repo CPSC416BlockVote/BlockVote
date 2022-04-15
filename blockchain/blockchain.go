@@ -160,8 +160,8 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 			success = false
 			return
 		}
-		// validate txns
-		for _, valid := range bc._ValidateTxns(block.Txns, false) {
+		// validate txns (use the chain that the block is on, not necessarily the longest)
+		for _, valid := range bc._ValidateTxns(block.Txns, false, block.PrevHash) {
 			if !valid {
 				success = false
 				return
@@ -260,7 +260,8 @@ func (bc *BlockChain) NewIterator(hash []byte) *ChainIterator {
 }
 
 // INTERNAL USE ONLY
-func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool) bool {
+func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte) bool {
+	// when fork is nil, default to validate on the longest chain
 	// 1. verify signature
 	if !txn.Verify() {
 		return false
@@ -282,12 +283,16 @@ func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool) bool {
 	}
 	// 2.3: voter can only vote once
 	var iter *ChainIterator
-	if lock {
+	if lock && fork == nil {
 		bc.mu.Lock()
 		iter = bc.NewIterator(bc.LastHash)
 		bc.mu.Unlock()
 	} else {
-		iter = bc.NewIterator(bc.LastHash)
+		if fork == nil {
+			iter = bc.NewIterator(bc.LastHash)
+		} else {
+			iter = bc.NewIterator(fork)
+		}
 	}
 
 	for block, end := iter.Next(); !end; block, end = iter.Next() {
@@ -301,9 +306,10 @@ func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool) bool {
 }
 
 // INTERNAL USE ONLY
-func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool) (res []bool) {
+func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool, fork []byte) (res []bool) {
 	// check conflicting txns (first received wins)
 	// NOTE: txns should be sorted by when they were received. earlier txns should appear in front
+	// when fork is nil, default to validate on the longest chain
 	if lock {
 		bc.mu.Lock()
 	}
@@ -312,7 +318,7 @@ func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool) (res []bool)
 		if voterMap[fmt.Sprintf("%x", txn.PublicKey)] {
 			res = append(res, false)
 		} else {
-			res = append(res, bc._ValidateTxn(txn, false))
+			res = append(res, bc._ValidateTxn(txn, false, fork))
 			if res[len(res)-1] {
 				voterMap[fmt.Sprintf("%x", txn.PublicKey)] = true
 			}
@@ -325,12 +331,12 @@ func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool) (res []bool)
 }
 
 func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
-	return bc._ValidateTxn(txn, true)
+	return bc._ValidateTxn(txn, true, nil)
 }
 
 // ValidateTxns validates a set of transactions and deal with conflicting transactions among them
 func (bc *BlockChain) ValidateTxns(txns []*Transaction) (res []bool) {
-	res = bc._ValidateTxns(txns, true)
+	res = bc._ValidateTxns(txns, true, nil)
 	return
 }
 
