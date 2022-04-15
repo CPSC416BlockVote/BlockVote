@@ -24,5 +24,5 @@ func main() {
 
 	// Add client operations here
 
-	client.Stop()
+	//client.Stop()
 }

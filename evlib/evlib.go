@@ -30,6 +30,7 @@ type EV struct {
 	N_Receives             int
 	candidateList          []string
 	connCoord              *net.TCPConn
+	coordAddr              *net.TCPAddr
 	minerIpPort            string
 }
 
@@ -69,7 +70,7 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	if err != nil {
 		return err
 	}
-
+	d.coordAddr = cAddr
 	d.localCoordListenerAddr = lcAddr
 	d.coordClient = coordClient
 	d.localMinerListenerAddr = lmAddr
@@ -117,17 +118,51 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 			}
 		}
 	}()
-	// create ballot from user info
-	ballot := createBallot()
-	err = d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+
+	// use terminal to auto or manually crate ballot
+	//ballot := createBallot()
+	//err = d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+	//if err != nil {
+	//	return err
+	//}
+
+	// auto create ballots
+	voterNames := [10]string{"voter0", "voter1", "voter2", "voter3", "voter4", "voter5", "voter6", "voter7", "voter8", "voter9"}
+	voterIDs := [10]string{"0000", "1111", "2222", "3333", "4444", "5555", "6666", "7777", "8888", "9999"}
+	txnID := []byte("")
+	for i := 0; i < len(voterNames); i++ {
+		ballot := blockChain.Ballot{
+			voterNames[rand.Intn(9)],
+			voterIDs[rand.Intn(9)],
+			d.candidateList[rand.Intn(9)],
+		}
+		fmt.Println(ballot)
+		txnID, err = d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+		if err != nil {
+			return err
+		}
+	}
+	time.Sleep(30 * time.Second)
+	// query how many confirmed txn based on last txnID in the loop
+	numConfirmed, err := d.GetBallotStatus(txnID)
 	if err != nil {
 		return err
+	}
+	fmt.Println("num of Confirmed txn: ", numConfirmed)
+	// query how many confirmed txn based on last txnID in the loop
+	for i := 0; i < len(d.candidateList); i++ {
+		fmt.Println("checking ", d.candidateList[i])
+		voters, err := d.GetCandVotes(d.candidateList[i])
+		if err != nil {
+			return err
+		}
+		fmt.Println(voters)
 	}
 	return nil
 }
 
 // Vote API provides the functionality of voting
-func (d *EV) Vote(from, fromID, to string) error {
+func (d *EV) Vote(from, fromID, to string) ([]byte, error) {
 
 	ballot := blockChain.Ballot{
 		VoterName:      from,
@@ -145,14 +180,15 @@ func (d *EV) Vote(from, fromID, to string) error {
 	var submitTxnReply *blockvote.SubmitTxnReply
 	err := d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
 	if err != nil {
-		return err
+		return []byte(""), err
 	}
 
-	return nil
+	return txn.ID, nil
 }
 
 // GetBallotStatus API checks the status of a transaction and returns the number of blocks that confirm it
 func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
+	d.connCoordAddr()
 	var queryTxnReply *blockvote.QueryTxnReply
 	err := d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
 		TxID: TxID,
@@ -165,13 +201,13 @@ func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 
 // GetCandVotes API retrieve the number of votes a candidate has.
 func (d *EV) GetCandVotes(candidate string) (uint, error) {
-
+	d.connCoordAddr()
 	if len(d.candidateList) == 0 {
 		return 0, errors.New("Empty Candidates.\n")
 	}
 
 	var queryResultReply *blockvote.QueryResultsReply
-	err := d.coordClient.Call("CoordAPIClient.QueryResults", nil, &queryResultReply)
+	err := d.coordClient.Call("CoordAPIClient.QueryResults", blockvote.QueryResultsArgs{}, &queryResultReply)
 	if err != nil {
 		return 0, err
 	}
@@ -202,12 +238,18 @@ func createBallot() blockChain.Ballot {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Enter your name: ")
 	voterName, _ := reader.ReadString('\n')
+
 	reader = bufio.NewReader(os.Stdin)
 	fmt.Print("Enter your studentID: ")
 	voterId, _ := reader.ReadString('\n')
-	reader = bufio.NewReader(os.Stdin)
-	fmt.Print("Vote your vote Candidate: ")
-	candidateName, _ := reader.ReadString('\n')
+	// ^[0-9]{8}
+	isIDValid := false
+	candidateName := ""
+	for !isIDValid {
+		reader = bufio.NewReader(os.Stdin)
+		fmt.Print("Vote your vote Candidate: ")
+		candidateName, _ = reader.ReadString('\n')
+	}
 
 	ballot := blockChain.Ballot{
 		strings.TrimRight(voterName, "\r\n"),
@@ -262,6 +304,26 @@ func (d *EV) connMinerAddr(minerAddr string) error {
 		return err
 	}
 	d.minerClient = rpc.NewClient(conn)
+	return nil
+}
+
+func (d *EV) connCoordAddr() error {
+	// setup connection to the miner
+	conn, err := net.DialTCP("tcp", d.localCoordListenerAddr, d.coordAddr)
+	if err != nil {
+		return err
+	}
+	// timeout
+	readAndWriteTimeout := 5 * time.Second
+	err = conn.SetDeadline(time.Now().Add(readAndWriteTimeout))
+	if err != nil {
+		return err
+	}
+	err = conn.SetLinger(0)
+	if err != nil {
+		return err
+	}
+	d.coordClient = rpc.NewClient(conn)
 	return nil
 }
 
