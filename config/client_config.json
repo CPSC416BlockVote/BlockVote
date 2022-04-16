@@ -4,7 +4,7 @@
   "LocalCoordIPPort": "127.0.0.1:12745",
   "LocalMinerIPPort": "127.0.0.1:32745",
   "TracingServerAddr": "127.0.0.1:25625",
-  "N_Receives": 1,
+  "N_Receives": 2,
   "Secret": "",
   "TracingIdentity": "client1"
 }

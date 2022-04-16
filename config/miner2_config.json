@@ -1,0 +1,10 @@
+{
+  "MinerID": "miner2",
+  "CoordAddr": "127.0.0.1:22746",
+  "MinerAddr": "127.0.0.1:27202",
+  "TracingServerAddr": "127.0.0.1:25625",
+  "Difficulty": 8,
+  "Secret": "",
+  "MaxTxn": 3,
+  "TracingIdentity": "miner2"
+}
