@@ -50,18 +50,28 @@ func main() {
 		}
 	}
 
-	time.Sleep(20 * time.Second)
+	time.Sleep(60 * time.Second)
 	// query which block has confirmed txn with first txnID in the loop
-	for voter, txn := range client.VoterTxnMap {
-		fmt.Println("voter:", voter, "=>", "txnID:", txn.ID)
-		numConfirmed, err := client.GetBallotStatus(txn.ID)
+	for voter, txnInfo := range client.VoterTxnInfoMap {
+		fmt.Println("voter:", voter, "=>", "txnInfo:", txnInfo)
+		//numConfirmed, err := client.GetBallotStatus(txnInfo.txn.ID)
+		//if err != nil {
+		//	log.Panic(err)
+		//}
+		//fmt.Println("num of Confirmed txn: ", numConfirmed)
+	}
+
+	time.Sleep(40 * time.Second)
+	// query how many confirmed txn based on last txnID in the loop
+	for i := 0; i < len(client.CandidateList); i++ {
+		voters, err := client.GetCandVotes(client.CandidateList[i])
 		if err != nil {
 			log.Panic(err)
 		}
-		fmt.Println("num of Confirmed txn: ", numConfirmed)
+		fmt.Println("checking ", client.CandidateList[i], " : ", voters)
 	}
 
-	time.Sleep(90 * time.Second)
+	time.Sleep(60 * time.Second)
 	// query how many confirmed txn based on last txnID in the loop
 	for i := 0; i < len(client.CandidateList); i++ {
 		voters, err := client.GetCandVotes(client.CandidateList[i])

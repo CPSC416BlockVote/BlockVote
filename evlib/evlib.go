@@ -2,7 +2,6 @@ package evlib
 
 import (
 	"bufio"
-	"bytes"
 	wallet "cs.ubc.ca/cpsc416/BlockVote/Identity"
 	blockChain "cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/blockvote"
@@ -18,6 +17,12 @@ import (
 	"time"
 )
 
+type TxnInfo struct {
+	txn        blockChain.Transaction
+	submitTime time.Time
+	isValid    bool
+}
+
 type EV struct {
 	// Add EV instance state here.
 	voterWallet      wallet.Wallets
@@ -30,7 +35,7 @@ type EV struct {
 	localCoordIPPort string
 	coordClient      *rpc.Client
 	minerClient      *rpc.Client
-	VoterTxnMap      map[string]blockChain.Transaction
+	VoterTxnInfoMap  map[string]TxnInfo
 	MinerAddrList    []string
 }
 
@@ -49,6 +54,7 @@ type VoterNameID struct {
 
 var quit chan bool
 var voterInfo []VoterNameID
+var thread = 60 * time.Second
 
 func (d *EV) connectCoord() error {
 	// setup conn to coord
@@ -98,7 +104,7 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	d.coordIPPort = coordIPPort
 	d.localCoordIPPort = localCoordIPPort
 	d.localMinerIPPort = localMinerIPPort
-	d.VoterTxnMap = make(map[string]blockChain.Transaction)
+	d.VoterTxnInfoMap = make(map[string]TxnInfo)
 
 	// setup conn to coord
 	for {
@@ -116,7 +122,6 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 		if err == nil {
 			break
 		}
-		time.Sleep(500 * time.Millisecond)
 	}
 
 	// print all candidates Name
@@ -133,7 +138,6 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 		// call coord for list of active miners with length N_Receives
 		for {
 			var minerListReply *blockvote.GetMinerListReply
-			// TODO
 			for {
 				err := d.connectCoord()
 				err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
@@ -151,6 +155,32 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 				index = rand.Intn(len(d.MinerAddrList) - 1)
 			}
 			d.minerIpPort = d.MinerAddrList[index]
+
+			for voter, voterInfo := range d.VoterTxnInfoMap {
+				if time.Now().Sub(voterInfo.submitTime) > thread && !voterInfo.isValid {
+					// start query status
+					var queryTxnReply *blockvote.QueryTxnReply
+					for {
+						err := d.connectCoord()
+						err = d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
+							TxID: voterInfo.txn.ID,
+						}, &queryTxnReply)
+						if err == nil {
+							if queryTxnReply.NumConfirmed > -1 {
+								voterInfo.isValid = true
+								break
+							} else {
+								d.submitTxn(voterInfo.txn)
+								voterInfo.isValid = false
+								voterInfo.submitTime = time.Now()
+								fmt.Println(voter, "txn resubmit...")
+								break
+							}
+						}
+					}
+				}
+			}
+
 			select {
 			case <-quit:
 				// end
@@ -160,14 +190,6 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 			}
 		}
 	}()
-
-	// use terminal to auto or manually crate ballot
-	//ballot := createBallot()
-	//err = d.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
-	//if err != nil {
-	//	return err
-	//}
-
 	return nil
 }
 
@@ -218,7 +240,11 @@ func (d *EV) Vote(from, fromID, to string) error {
 		err := d.connectMiner()
 		err = d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
 		if err == nil {
-			d.VoterTxnMap[from] = txn
+			d.VoterTxnInfoMap[from] = TxnInfo{
+				txn:        txn,
+				submitTime: time.Now(),
+				isValid:    false,
+			}
 			break
 		} else {
 			fmt.Println("fail in SubmitTxn, retry... d.MinerAddrList len: ", len(d.MinerAddrList))
@@ -272,28 +298,33 @@ func (d *EV) submitTxn(txn blockChain.Transaction) error {
 						break
 					}
 					fmt.Println("d.MinerAddrList len: ", len(d.MinerAddrList))
-					time.Sleep(500 * time.Millisecond)
+					time.Sleep(3 * time.Second)
 				}
 			}
 		}
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(3 * time.Second)
 	}
 	return nil
 }
 
 //func findTxn(TxID []byte, voterTxnMap map[string]blockChain.Transaction) blockChain.Transaction {
+//	tempTxn := blockChain.Transaction{
+//		Data:      nil,
+//		ID:        nil,
+//		Signature: nil,
+//		PublicKey: nil,
+//	}
 //	for _, txn := range voterTxnMap {
 //		if bytes.Compare(TxID, txn.ID) == 0 {
-//			return txn
+//			tempTxn = txn
 //		}
 //	}
-//	return nil
+//	return tempTxn
 //}
 
 // GetBallotStatus API checks the status of a transaction and returns the number of blocks that confirm it
 func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
-	result := -1
-	retry := 0
+	//retry := 0
 	var queryTxnReply *blockvote.QueryTxnReply
 	for {
 		err := d.connectCoord()
@@ -301,34 +332,10 @@ func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 			TxID: TxID,
 		}, &queryTxnReply)
 		if err == nil {
-			if queryTxnReply != nil {
-				result = queryTxnReply.NumConfirmed
-				if result != -1 {
-					break
-				}
-			}
+			break
 		}
-		fmt.Println("fail to queryTxn, retry...")
-		retry++
-		if retry == 3 {
-			tempTxn := blockChain.Transaction{
-				Data:      nil,
-				ID:        nil,
-				Signature: nil,
-				PublicKey: nil,
-			}
-			for _, txn := range d.VoterTxnMap {
-				if bytes.Compare(TxID, txn.ID) == 0 {
-					tempTxn = txn
-				}
-			}
-			fmt.Println("fail to queryTxn, resubmit submitTxn...", tempTxn.ID)
-			d.submitTxn(tempTxn)
-			retry = 0
-		}
-		time.Sleep(30 * time.Second)
 	}
-	return result, nil
+	return queryTxnReply.NumConfirmed, nil
 }
 
 // GetCandVotes API retrieve the number of votes a candidate has.
@@ -343,8 +350,6 @@ func (d *EV) GetCandVotes(candidate string) (uint, error) {
 		if err == nil {
 			break
 		}
-		fmt.Println("fail to QueryResults, retry...")
-		time.Sleep(10 * time.Second)
 	}
 
 	idx := 0

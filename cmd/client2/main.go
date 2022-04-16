@@ -52,13 +52,13 @@ func main() {
 
 	time.Sleep(20 * time.Second)
 	// query which block has confirmed txn with first txnID in the loop
-	for voter, txn := range client.VoterTxnMap {
-		fmt.Println("voter:", voter, "=>", "txnID:", txn.ID)
-		numConfirmed, err := client.GetBallotStatus(txn.ID)
-		if err != nil {
-			log.Panic(err)
-		}
-		fmt.Println("num of Confirmed txn: ", numConfirmed)
+	for voter, txnInfo := range client.VoterTxnInfoMap {
+		fmt.Println("voter:", voter, "=>", "txnInfo:", txnInfo)
+		//numConfirmed, err := client.GetBallotStatus(txn.ID)
+		//if err != nil {
+		//	log.Panic(err)
+		//}
+		//fmt.Println("num of Confirmed txn: ", numConfirmed)
 	}
 
 	time.Sleep(90 * time.Second)
