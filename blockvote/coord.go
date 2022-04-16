@@ -9,6 +9,7 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"encoding/gob"
 	"errors"
+	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"math/rand"
@@ -121,11 +122,18 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	// 1. Initialization
 	// 1.1 Storage(DB)
 	resume := c.InitStorage()
+	if resume {
+		log.Println("[INFO] Restarting...")
+	}
 	defer c.Storage.Close()
 	// 1.2 Candidates
 	c.InitCandidates(nCandidates, resume)
 	// 1.3 Blockchain
 	c.InitBlockchain(resume)
+	// print chain to file if restart
+	if resume {
+		c.PrintChain()
+	}
 
 	// 2. Starting API services
 	coordIp := minerAPIListenAddr[0:strings.Index(minerAPIListenAddr, ":")]
@@ -365,6 +373,25 @@ func (c *Coord) NotifyMiners() {
 	}
 }
 
+func (c *Coord) PrintChain() {
+	votes, txns := c.Blockchain.VotingStatus()
+	fv, err := os.Create("./votes.txt")
+	util.CheckErr(err, "Unable to create votes.txt")
+	defer fv.Close()
+	for idx, _ := range votes {
+		fv.WriteString(fmt.Sprintf("%s,%d\n", c.Candidates[idx].CandidateData.CandidateName, votes[idx]))
+	}
+	fv.Sync()
+
+	ft, err := os.Create("./txns.txt")
+	util.CheckErr(err, "Unable to create txns.txt")
+	defer ft.Close()
+	for _, txn := range txns {
+		ft.WriteString(fmt.Sprintf("%x,%s,%s\n", txn.ID, txn.Data.VoterName, txn.Data.VoterCandidate))
+	}
+	ft.Sync()
+}
+
 // ----- APIs for miner -----
 
 type CoordAPIMiner struct {
@@ -481,6 +508,7 @@ func (api *CoordAPIClient) QueryTxn(args QueryTxnArgs, reply *QueryTxnReply) err
 }
 
 func (api *CoordAPIClient) QueryResults(_ QueryResultsArgs, reply *QueryResultsReply) error {
-	*reply = QueryResultsReply{Votes: api.c.Blockchain.VotingStatus()}
+	votes, _ := api.c.Blockchain.VotingStatus()
+	*reply = QueryResultsReply{Votes: votes}
 	return nil
 }
