@@ -36,6 +36,7 @@ type EV struct {
 	coordClient      *rpc.Client
 	minerClient      *rpc.Client
 	VoterTxnInfoMap  map[string]TxnInfo
+	VoterTxnMap      map[string]blockChain.Transaction
 	MinerAddrList    []string
 }
 
@@ -105,6 +106,7 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 	d.localCoordIPPort = localCoordIPPort
 	d.localMinerIPPort = localMinerIPPort
 	d.VoterTxnInfoMap = make(map[string]TxnInfo)
+	d.VoterTxnMap = make(map[string]blockChain.Transaction)
 
 	// setup conn to coord
 	for {
@@ -240,11 +242,13 @@ func (d *EV) Vote(from, fromID, to string) error {
 		err := d.connectMiner()
 		err = d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
 		if err == nil {
+
 			d.VoterTxnInfoMap[from] = TxnInfo{
 				txn:        txn,
 				submitTime: time.Now(),
 				isValid:    false,
 			}
+			d.VoterTxnMap[from] = txn
 			break
 		} else {
 			fmt.Println("fail in SubmitTxn, retry... d.MinerAddrList len: ", len(d.MinerAddrList))
