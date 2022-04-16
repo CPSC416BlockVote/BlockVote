@@ -230,9 +230,9 @@ func Monitor(conn *net.UDPConn, remoteIpPort string, notifyCh chan<- FailureDete
 			if !acked {
 				// If an ack message is not received in the appropriate RTT timeout interval, then the count of lost msgs should be incremented by 1.
 				lostCount++
-				log.Println("[fcheck] Message lost count:", lostCount)
+				//log.Println("[fcheck] Message lost count:", lostCount)
 				if lostCount >= lostMsgThresh {
-					log.Println("[fcheck] Server at " + remoteIpPort + " failed.")
+					//log.Println("[fcheck] Server at " + remoteIpPort + " failed.")
 					// If a node X was detected as failed, then
 					// (1) exactly one failure notification must be generated
 					failureDetected := FailureDetected{

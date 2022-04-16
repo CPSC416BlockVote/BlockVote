@@ -240,6 +240,7 @@ func (c *Coord) Tracker(notifyCh <-chan fchecker.FailureDetected) {
 				c.nlMu.Lock()
 				for idx, node := range c.NodeList {
 					if node.Property.AckAddr == failure.UDPIpPort {
+						log.Printf("[INFO] Detected a miner failure: %s (%d remains)\n", node.Property.MinerId, len(c.NodeList)-1)
 						// remove from disk first
 						c.Storage.Remove(util.DBKeyWithPrefix(NodeKeyPrefix, []byte(node.Property.MinerId)))
 						// remove from node list
@@ -455,8 +456,8 @@ func (api *CoordAPIMiner) Register(args RegisterArgs, reply *RegisterReply) erro
 	if err != nil {
 		log.Println("[WARN] fcheck is unable to connect to miner at", newNodeInfo.Property.AckAddr)
 	}
-	log.Printf("[INFO] New miner joined: %s (g: %s, co: %s, m: %s, cl:%s)", args.Info.MinerId,
-		args.Info.GossipAddr, args.Info.CoordListenAddr, args.Info.MinerMinerAddr, args.Info.ClientListenAddr)
+	log.Printf("[INFO] New miner joined: %s (g: %s, co: %s, m: %s, cl:%s) (%d total)", args.Info.MinerId,
+		args.Info.GossipAddr, args.Info.CoordListenAddr, args.Info.MinerMinerAddr, args.Info.ClientListenAddr, len(api.c.NodeList))
 
 	// prepare reply data
 	var peerAddrList []string
