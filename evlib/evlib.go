@@ -140,8 +140,8 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 				if err == nil && len(minerListReply.MinerAddrList) > 0 {
 					break
 				}
-				fmt.Println("fail GetMinerList retry... MinerAddrList len: ", len(minerListReply.MinerAddrList))
-				time.Sleep(500 * time.Millisecond)
+				fmt.Println("fail GetMinerList retry...")
+				time.Sleep(5 * time.Second)
 			}
 
 			// random pick one miner addr
@@ -230,12 +230,16 @@ func (d *EV) Vote(from, fromID, to string) error {
 				for {
 					err := d.connectCoord()
 					err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
-					d.MinerAddrList = minerListReply.MinerAddrList
 					if err == nil && len(d.MinerAddrList) > 0 {
-						break
+						if minerListReply != nil {
+							d.MinerAddrList = minerListReply.MinerAddrList
+							if len(d.MinerAddrList) > 0 {
+								break
+							}
+						}
 					}
-					fmt.Println("fail GetMinerList, retry... d.MinerAddrList len: ", len(d.MinerAddrList))
-					time.Sleep(500 * time.Millisecond)
+					fmt.Println("fail GetMinerList in SubmitTxn, retry... ")
+					time.Sleep(5 * time.Second)
 				}
 			}
 		}
@@ -296,9 +300,13 @@ func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 		err = d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
 			TxID: TxID,
 		}, &queryTxnReply)
-		result = queryTxnReply.NumConfirmed
-		if err == nil && result != -1 {
-			break
+		if err == nil {
+			if queryTxnReply != nil {
+				result = queryTxnReply.NumConfirmed
+				if result != -1 {
+					break
+				}
+			}
 		}
 		fmt.Println("fail to queryTxn, retry...")
 		retry++
@@ -318,7 +326,7 @@ func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 			d.submitTxn(tempTxn)
 			retry = 0
 		}
-		time.Sleep(60 * time.Second)
+		time.Sleep(30 * time.Second)
 	}
 	return result, nil
 }

@@ -61,7 +61,7 @@ func main() {
 		fmt.Println("num of Confirmed txn: ", numConfirmed)
 	}
 
-	time.Sleep(60 * time.Second)
+	time.Sleep(90 * time.Second)
 	// query how many confirmed txn based on last txnID in the loop
 	for i := 0; i < len(client.CandidateList); i++ {
 		voters, err := client.GetCandVotes(client.CandidateList[i])
