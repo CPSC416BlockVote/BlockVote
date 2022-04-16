@@ -55,7 +55,7 @@ type VoterNameID struct {
 
 var quit chan bool
 var voterInfo []VoterNameID
-var thread = 60 * time.Second
+var thread = 35 * time.Second
 
 func (d *EV) connectCoord() error {
 	// setup conn to coord
@@ -169,13 +169,19 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 						}, &queryTxnReply)
 						if err == nil {
 							if queryTxnReply.NumConfirmed > -1 {
-								voterInfo.isValid = true
+								d.VoterTxnInfoMap[voter] = TxnInfo{
+									txn:        voterInfo.txn,
+									submitTime: voterInfo.submitTime,
+									isValid:    true,
+								}
 								break
 							} else {
 								d.submitTxn(voterInfo.txn)
-								voterInfo.isValid = false
-								voterInfo.submitTime = time.Now()
-								fmt.Println(voter, "txn resubmit...")
+								d.VoterTxnInfoMap[voter] = TxnInfo{
+									txn:        voterInfo.txn,
+									submitTime: time.Now(),
+									isValid:    false,
+								}
 								break
 							}
 						}

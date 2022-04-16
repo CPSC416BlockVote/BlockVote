@@ -76,5 +76,18 @@ func main() {
 		fmt.Println("checking ", client.CandidateList[i], " : ", voters)
 	}
 
-	client.Stop()
+	time.Sleep(50 * time.Second)
+	for i := 0; i < len(client.CandidateList); i++ {
+		voters, err := client.GetCandVotes(client.CandidateList[i])
+		if err != nil {
+			log.Panic(err)
+		}
+		fmt.Println("checking ", client.CandidateList[i], " : ", voters)
+	}
+
+	for voter, txnInfo := range client.VoterTxnInfoMap {
+		fmt.Println("voter:", voter, "=>", "txnInfo:", txnInfo)
+	}
+
+	//client.Stop()
 }
