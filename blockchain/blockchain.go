@@ -184,6 +184,11 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 
 	// check chain
 	if bytes.Compare(block.PrevHash, bc.LastHash) == 0 {
+		err = bc.DB.Put(LastHashKey, block.Hash)
+		if err != nil {
+			log.Println("[ERROR] Unable to save last hash:")
+			log.Fatal(err)
+		}
 		bc.LastHash = block.Hash
 	} else {
 		// possible new fork, check length
@@ -244,6 +249,11 @@ func (bc *BlockChain) CheckoutFork(lastHashNew []byte) (newTxns []*Transaction, 
 	}
 
 	// set last hash
+	err := bc.DB.Put(LastHashKey, lastHashNew)
+	if err != nil {
+		log.Println("[ERROR] Unable to save last hash:")
+		log.Fatal(err)
+	}
 	bc.LastHash = lastHashNew
 
 	return newTxns, oldTxns
@@ -362,20 +372,21 @@ func (bc *BlockChain) TxnStatus(txid []byte) int {
 	return res
 }
 
-func (bc *BlockChain) VotingStatus() (votes []uint) {
+func (bc *BlockChain) VotingStatus() (votes []uint, txns []Transaction) {
 	for i := 0; i < len(bc.Candidates); i++ {
 		votes = append(votes, 0)
 	}
 	bc.mu.Lock()
 	iter := bc.NewIterator(bc.LastHash)
 	bc.mu.Unlock()
-	skip := 6 // last six blocks do not count
+	skip := 4 // last four blocks do not count
 	for block, end := iter.Next(); !end; block, end = iter.Next() {
 		if skip > 0 {
 			skip--
 			continue
 		}
 		for _, txn := range block.Txns {
+			txns = append(txns, *txn)
 			for idx, cand := range bc.Candidates {
 				if txn.Data.VoterCandidate == cand.CandidateData.CandidateName {
 					votes[idx]++
