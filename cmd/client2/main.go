@@ -14,7 +14,7 @@ import (
 
 func main() {
 	var config blockvote.ClientConfig
-	err := util.ReadJSONConfig("config/client_config.json", &config)
+	err := util.ReadJSONConfig("config/client2_config.json", &config)
 	util.CheckErr(err, "Error reading client config: %v\n", err)
 
 	tracer := tracing.NewTracer(tracing.TracerConfig{
@@ -29,8 +29,8 @@ func main() {
 
 	// Add client operations here
 	//auto create ballots
-	voterNames := [10]string{"voter0", "voter1", "voter2", "voter3", "voter4", "voter5", "voter6", "voter7", "voter8", "voter9"}
-	voterIDs := [10]string{"0000", "1111", "2222", "3333", "4444", "5555", "6666", "7777", "8888", "9999"}
+	voterNames := [10]string{"voter10", "voter11", "voter12", "voter13", "voter14", "voter15", "voter16", "voter17", "voter18", "voter19"}
+	voterIDs := [10]string{"1000", "2111", "3222", "4333", "5444", "6555", "7666", "8777", "9888", "1999"}
 	for i := 0; i < len(voterNames); i++ {
 		ballot := blockChain.Ballot{
 			voterNames[i],

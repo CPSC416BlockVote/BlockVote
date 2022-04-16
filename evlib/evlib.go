@@ -137,18 +137,19 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 			for {
 				err := d.connectCoord()
 				err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
-				if err == nil {
+				if err == nil && len(minerListReply.MinerAddrList) > 0 {
 					break
 				}
+				fmt.Println("fail GetMinerList retry... MinerAddrList len: ", len(minerListReply.MinerAddrList))
 				time.Sleep(500 * time.Millisecond)
 			}
 
 			// random pick one miner addr
 			index := 0
-			if d.N_Receives > 1 {
-				index = rand.Intn(d.N_Receives - 1)
-			}
 			d.MinerAddrList = minerListReply.MinerAddrList
+			if len(d.MinerAddrList) > 1 {
+				index = rand.Intn(len(d.MinerAddrList) - 1)
+			}
 			d.minerIpPort = d.MinerAddrList[index]
 			select {
 			case <-quit:
@@ -230,10 +231,10 @@ func (d *EV) Vote(from, fromID, to string) error {
 					err := d.connectCoord()
 					err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
 					d.MinerAddrList = minerListReply.MinerAddrList
-					if err == nil {
+					if err == nil && len(d.MinerAddrList) > 0 {
 						break
 					}
-					fmt.Println("d.MinerAddrList len: ", len(d.MinerAddrList))
+					fmt.Println("fail GetMinerList, retry... d.MinerAddrList len: ", len(d.MinerAddrList))
 					time.Sleep(500 * time.Millisecond)
 				}
 			}
@@ -313,6 +314,7 @@ func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 					tempTxn = txn
 				}
 			}
+			fmt.Println("fail to queryTxn, resubmit submitTxn...", tempTxn.ID)
 			d.submitTxn(tempTxn)
 			retry = 0
 		}
