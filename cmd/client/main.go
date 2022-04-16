@@ -1,10 +1,15 @@
 package main
 
 import (
+	blockChain "cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/blockvote"
 	"cs.ubc.ca/cpsc416/BlockVote/evlib"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
+	"fmt"
 	"github.com/DistributedClocks/tracing"
+	"log"
+	"math/rand"
+	"time"
 )
 
 func main() {
@@ -23,6 +28,48 @@ func main() {
 	util.CheckErr(err, "Error reading client config: %v\n", err)
 
 	// Add client operations here
+	//auto create ballots
+	voterNames := [10]string{"voter0", "voter1", "voter2", "voter3", "voter4", "voter5", "voter6", "voter7", "voter8", "voter9"}
+	voterIDs := [10]string{"0000", "1111", "2222", "3333", "4444", "5555", "6666", "7777", "8888", "9999"}
+	for i := 0; i < len(voterNames); i++ {
+		ballot := blockChain.Ballot{
+			voterNames[i],
+			voterIDs[i],
+			client.CandidateList[rand.Intn(10)],
+		}
+		if i == 0 {
+			err = client.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+			if err != nil {
+				log.Panic(err)
+			}
+		}
+		fmt.Println(ballot)
+		err = client.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+		if err != nil {
+			log.Panic(err)
+		}
+	}
 
-	//client.Stop()
+	time.Sleep(20 * time.Second)
+	// query which block has confirmed txn with first txnID in the loop
+	for voter, txn := range client.VoterTxnMap {
+		fmt.Println("voter:", voter, "=>", "txnID:", txn.ID)
+		numConfirmed, err := client.GetBallotStatus(txn.ID)
+		if err != nil {
+			log.Panic(err)
+		}
+		fmt.Println("num of Confirmed txn: ", numConfirmed)
+	}
+
+	time.Sleep(20 * time.Second)
+	// query how many confirmed txn based on last txnID in the loop
+	for i := 0; i < len(client.CandidateList); i++ {
+		voters, err := client.GetCandVotes(client.CandidateList[i])
+		if err != nil {
+			log.Panic(err)
+		}
+		fmt.Println("checking ", client.CandidateList[i], " : ", voters)
+	}
+
+	client.Stop()
 }
