@@ -317,21 +317,6 @@ func (d *EV) submitTxn(txn blockChain.Transaction) error {
 	return nil
 }
 
-//func findTxn(TxID []byte, voterTxnMap map[string]blockChain.Transaction) blockChain.Transaction {
-//	tempTxn := blockChain.Transaction{
-//		Data:      nil,
-//		ID:        nil,
-//		Signature: nil,
-//		PublicKey: nil,
-//	}
-//	for _, txn := range voterTxnMap {
-//		if bytes.Compare(TxID, txn.ID) == 0 {
-//			tempTxn = txn
-//		}
-//	}
-//	return tempTxn
-//}
-
 // GetBallotStatus API checks the status of a transaction and returns the number of blocks that confirm it
 func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 	//retry := 0
