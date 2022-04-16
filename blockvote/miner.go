@@ -162,14 +162,16 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	// Miner join
 	log.Println("[INFO] Retrieving infomation from coord...")
 	coordClient, err := util.NewRPCClient(minerAddr, coordAddr)
-	if err != nil {
-		return errors.New("cannot create client for coord")
+	for err != nil {
+		log.Println("[INFO] Reattempting to establish connection with coord...")
+		coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
 	}
 	// download blockchain from coord
 	downloadReply := DownloadReply{}
 	err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
-	if err != nil {
-		return errors.New("cannot download data from coord")
+	for err != nil {
+		log.Println("[INFO] Reattempting to download data from coord...")
+		err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
 	}
 
 	// setup candidates
@@ -193,32 +195,34 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 
 	// setup txn pool (download from any of its peers)
 	log.Println("[INFO] Setting up memory pool...")
-	if len(downloadReply.PeerAddrList) > 0 { // only need to download txn pool if there are existing miners
-		for {
-			i := 0
-			for i < len(downloadReply.PeerAddrList) { // attempt to download txn pool from selected peer
-				// get txn pool from the peer
-				toPullMinerAddr := downloadReply.PeerAddrList[i]
-				minerClient, err := rpc.Dial("tcp", toPullMinerAddr)
-				if err != nil {
-					i++
-					continue
-				}
-				reply := GetTxnPoolReply{}
-				err = minerClient.Call("MinerAPIMiner.GetTxnPool", GetTxnPoolArgs{}, &reply)
-				if err != nil {
-					i++
-					continue
-				}
-				m.MemoryPool = reply.PeerTxnPool
-				break
+	for len(downloadReply.PeerAddrList) > 0 { // only need to download txn pool if there are existing miners
+		i := 0
+		for i < len(downloadReply.PeerAddrList) { // attempt to download txn pool from selected peer
+			// get txn pool from the peer
+			toPullMinerAddr := downloadReply.PeerAddrList[i]
+			minerClient, err := rpc.Dial("tcp", toPullMinerAddr)
+			if err != nil {
+				i++
+				continue
 			}
-			if i == len(downloadReply.PeerAddrList) {
-				// TODO: if all peers failed, contact coord again for updated peer address list
-
-			} else {
-				break
+			reply := GetTxnPoolReply{}
+			err = minerClient.Call("MinerAPIMiner.GetTxnPool", GetTxnPoolArgs{}, &reply)
+			if err != nil {
+				i++
+				continue
 			}
+			m.MemoryPool = reply.PeerTxnPool
+			break
+		}
+		if i == len(downloadReply.PeerAddrList) {
+			// if all peers failed, contact coord again for updated peer address list
+			err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
+			for err != nil {
+				log.Println("[INFO] Reattempting to download data from coord...")
+				err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
+			}
+		} else {
+			break
 		}
 	}
 
