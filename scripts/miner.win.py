@@ -8,7 +8,7 @@ import psutil
 import random
 
 def boot(i):
-    pid = subprocess.Popen(['bin\\416miner.exe', "-id", f"miner{i + 1}", "-addr", "127.0.0.1:" + str(27201 + i), ">", f"./logs/miner{i+1}.txt", "2>&1"], shell=True)
+    pid = subprocess.Popen(['bin\\416miner.exe', "-id", f"miner{i + 1}", "-addr", "127.0.0.1:" + str(27201 + i)], shell=True)
     print(f"miner {i+1} started.")
     return pid
 

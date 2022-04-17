@@ -62,5 +62,5 @@ func PrintBlock(block *Block) {
 	for _, txn := range block.Txns {
 		str += fmt.Sprintf("\t    %s\t -> %s\n", txn.Data.VoterName, txn.Data.VoterCandidate)
 	}
-	fmt.Print(str)
+	log.Print(str)
 }

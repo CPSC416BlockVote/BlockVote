@@ -8,7 +8,7 @@ import psutil
 import random
 
 def boot(i):
-    pid = subprocess.Popen(['./bin/416miner', "-id", f"miner{i + 1}", "-addr", "127.0.0.1:" + str(27201 + i), "&", ">", f"./logs/miner{i+1}.txt", "2>&1"], shell=True)
+    pid = subprocess.Popen(['./bin/416miner', "-id", f"miner{i + 1}", "-addr", "127.0.0.1:" + str(27201 + i)])
     print(f"miner {i+1} started.")
     return pid
 
@@ -21,7 +21,7 @@ def boot_multi(num, max_id=0):
         miners.append(boot(i))
 
         for proc in psutil.process_iter():
-            if proc.name() == "416miner.exe" and proc.pid not in miner_pids:
+            if proc.name() == "416miner" and proc.pid not in miner_pids:
                 miner_pids.append(proc.pid)
                 break
     return miners, miner_pids
