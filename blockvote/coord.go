@@ -114,11 +114,6 @@ func NewCoord() *Coord {
 }
 
 func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCandidates uint8, ctrace *tracing.Tracer) error {
-	// FIXME: comment out below if statement to test coord restart
-	if _, err := os.Stat("./storage/coord"); err == nil {
-		os.RemoveAll("./storage/coord")
-	}
-
 	// 1. Initialization
 	// 1.1 Storage(DB)
 	resume := c.InitStorage()

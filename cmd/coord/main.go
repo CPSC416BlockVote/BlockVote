@@ -3,7 +3,9 @@ package main
 import (
 	"cs.ubc.ca/cpsc416/BlockVote/blockvote"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
+	"flag"
 	"github.com/DistributedClocks/tracing"
+	"os"
 )
 
 func main() {
@@ -14,6 +16,14 @@ func main() {
 		TracerIdentity: config.TracingIdentity,
 		Secret:         config.Secret,
 	})
+	var restart bool
+	flag.BoolVar(&restart, "r", false, "whether to restart coord")
+	flag.Parse()
+	if !restart {
+		if _, err := os.Stat("./storage/coord"); err == nil {
+			os.RemoveAll("./storage/coord")
+		}
+	}
 	coord := blockvote.NewCoord()
 	coord.Start(config.ClientAPIListenAddr, config.MinerAPIListenAddr, config.NCandidates, ctracer)
 }

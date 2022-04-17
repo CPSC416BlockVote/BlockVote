@@ -28,12 +28,12 @@ def boot_multi(num, max_id=0):
 
 def main():
     parser = argparse.ArgumentParser(description='P2 Booting Script')
-    parser.add_argument('--n', type=int, default=4,
+    parser.add_argument('-n', type=int, default=4,
                         help='number of miners in the chain')
     args = parser.parse_args()
 
     # system settings
-    num_miners = args.num_miners
+    num_miners = args.n
     max_id = 0
 
     # go build
@@ -73,7 +73,7 @@ def main():
             os.system(f"taskkill /IM \"416miner.exe\" /F")
             return
         elif action[0] == "k":
-            killedPids = sample(miner_pids, min(len(miner_pids) - 1, int(action.split()[1])))
+            killedPids = sample(miner_pids, min(len(miner_pids), int(action.split()[1])))
             cmd = "taskkill"
             for pid in killedPids:
                 miner_pids.remove(pid)
