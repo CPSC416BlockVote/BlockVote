@@ -10,7 +10,6 @@ import (
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"math/rand"
-	"net"
 	"net/rpc"
 	"os"
 	"strings"
@@ -57,72 +56,43 @@ var quit chan bool
 var voterInfo []VoterNameID
 var thread = 35 * time.Second
 
-func (d *EV) connectCoord() error {
+func (d *EV) connectCoord() {
 	// setup conn to coord
-
-	lcAddr, err := net.ResolveTCPAddr("tcp", d.localCoordIPPort)
-	if err != nil {
-		return err
+	client, err := rpc.Dial("tcp", d.coordIPPort)
+	for err != nil {
+		time.Sleep(3 * time.Second)
+		log.Println("[INFO] Reconnecting to coord...")
+		client, err = rpc.Dial("tcp", d.coordIPPort)
 	}
-
-	cAddr, err := net.ResolveTCPAddr("tcp", d.coordIPPort)
-	if err != nil {
-		return err
-	}
-
-	conn, err := net.DialTCP("tcp", lcAddr, cAddr)
-	if err != nil {
-		return err
-	}
-	d.coordClient = rpc.NewClient(conn)
-	return nil
+	d.coordClient = client
 }
 
 func (d *EV) connectMiner() error {
 	// setup conn to coord
-	lmAddr, err := net.ResolveTCPAddr("tcp", d.localMinerIPPort)
-	if err != nil {
-		return err
-	}
-
-	mAddr, err := net.ResolveTCPAddr("tcp", d.minerIpPort)
-	if err != nil {
-		return err
-	}
-
-	conn, err := net.DialTCP("tcp", lmAddr, mAddr)
-	if err != nil {
-		return err
-	}
-	d.minerClient = rpc.NewClient(conn)
-	return nil
+	rpcClient, err := rpc.Dial("tcp", d.minerIpPort)
+	d.minerClient = rpcClient
+	return err
 }
 
 // Start Starts the instance of EV to use for connecting to the system with the given coord's IP:port.
-func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort string, localCoordIPPort string, localMinerIPPort string, N_Receives int) error {
+func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort string, N_Receives int) error {
 	voterInfo = make([]VoterNameID, 0)
 	d.N_Receives = N_Receives
 	d.coordIPPort = coordIPPort
-	d.localCoordIPPort = localCoordIPPort
-	d.localMinerIPPort = localMinerIPPort
 	d.VoterTxnInfoMap = make(map[string]TxnInfo)
 	d.VoterTxnMap = make(map[string]blockChain.Transaction)
 
 	// setup conn to coord
-	for {
-		err := d.connectCoord()
-		if err == nil {
-			break
-		}
-	}
+	d.connectCoord()
 
 	// get candidates from Coord
 	var candidatesReply *blockvote.GetCandidatesReply
 	for {
-		err := d.connectCoord()
-		err = d.coordClient.Call("CoordAPIClient.GetCandidates", blockvote.GetCandidatesArgs{}, &candidatesReply)
+		err := d.coordClient.Call("CoordAPIClient.GetCandidates", blockvote.GetCandidatesArgs{}, &candidatesReply)
 		if err == nil {
 			break
+		} else {
+			d.connectCoord()
 		}
 	}
 
@@ -141,13 +111,15 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 		for {
 			var minerListReply *blockvote.GetMinerListReply
 			for {
-				err := d.connectCoord()
-				err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
+				err := d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
 				if err == nil && len(minerListReply.MinerAddrList) > 0 {
 					break
+				} else if err != nil {
+					d.connectCoord()
+				} else {
+					log.Println("[WARN] No available miner. Waiting...")
+					time.Sleep(5 * time.Second)
 				}
-				fmt.Println("fail GetMinerList retry...")
-				time.Sleep(5 * time.Second)
 			}
 
 			// random pick one miner addr
@@ -163,8 +135,7 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 					// start query status
 					var queryTxnReply *blockvote.QueryTxnReply
 					for {
-						err := d.connectCoord()
-						err = d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
+						err := d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
 							TxID: voterInfo.txn.ID,
 						}, &queryTxnReply)
 						if err == nil {
@@ -184,6 +155,8 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId string, coordIPPort str
 								}
 								break
 							}
+						} else {
+							d.connectCoord()
 						}
 					}
 				}
@@ -246,7 +219,9 @@ func (d *EV) Vote(from, fromID, to string) error {
 	for {
 		// setup conn to miner
 		err := d.connectMiner()
-		err = d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
+		if err == nil {
+			err = d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
+		}
 		if err == nil {
 
 			d.VoterTxnInfoMap[from] = TxnInfo{
@@ -264,7 +239,6 @@ func (d *EV) Vote(from, fromID, to string) error {
 			} else {
 				var minerListReply *blockvote.GetMinerListReply
 				for {
-					err := d.connectCoord()
 					err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
 					if err == nil && len(d.MinerAddrList) > 0 {
 						if minerListReply != nil {
@@ -273,8 +247,10 @@ func (d *EV) Vote(from, fromID, to string) error {
 								break
 							}
 						}
+					} else if err != nil {
+						d.connectCoord()
 					}
-					fmt.Println("fail GetMinerList in SubmitTxn, retry... ")
+					fmt.Println("No available miner, waiting... ")
 					time.Sleep(5 * time.Second)
 				}
 			}
@@ -290,7 +266,9 @@ func (d *EV) submitTxn(txn blockChain.Transaction) error {
 	for {
 		// setup conn to miner
 		err := d.connectMiner()
-		err = d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
+		if err == nil {
+			err = d.minerClient.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
+		}
 		if err == nil {
 			break
 		} else {
@@ -301,14 +279,13 @@ func (d *EV) submitTxn(txn blockChain.Transaction) error {
 			} else {
 				var minerListReply *blockvote.GetMinerListReply
 				for {
-					err := d.connectCoord()
 					err = d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
 					d.MinerAddrList = minerListReply.MinerAddrList
 					if err == nil {
 						break
+					} else {
+						d.connectCoord()
 					}
-					fmt.Println("d.MinerAddrList len: ", len(d.MinerAddrList))
-					time.Sleep(3 * time.Second)
 				}
 			}
 		}
@@ -322,12 +299,13 @@ func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 	//retry := 0
 	var queryTxnReply *blockvote.QueryTxnReply
 	for {
-		err := d.connectCoord()
-		err = d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
+		err := d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
 			TxID: TxID,
 		}, &queryTxnReply)
 		if err == nil {
 			break
+		} else {
+			d.connectCoord()
 		}
 	}
 	return queryTxnReply.NumConfirmed, nil
@@ -340,10 +318,11 @@ func (d *EV) GetCandVotes(candidate string) (uint, error) {
 	}
 	var queryResultReply *blockvote.QueryResultsReply
 	for {
-		err := d.connectCoord()
-		err = d.coordClient.Call("CoordAPIClient.QueryResults", blockvote.QueryResultsArgs{}, &queryResultReply)
+		err := d.coordClient.Call("CoordAPIClient.QueryResults", blockvote.QueryResultsArgs{}, &queryResultReply)
 		if err == nil {
 			break
+		} else {
+			d.connectCoord()
 		}
 	}
 

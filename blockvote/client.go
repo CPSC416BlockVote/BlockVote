@@ -1,10 +1,8 @@
 package blockvote
 
 type ClientConfig struct {
-	ClientID          string
+	ClientID          uint
 	CoordIPPort       string
-	LocalCoordIPPort  string
-	LocalMinerIPPort  string
 	TracingServerAddr string
 	N_Receives        int
 	Secret            []byte

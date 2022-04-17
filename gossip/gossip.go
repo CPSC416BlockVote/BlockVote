@@ -96,8 +96,8 @@ func Start(fanOut uint8, // number of connections
 	identity = clientIdentity
 	verbose = logging
 
-	qCh := make(chan Update, 50)
-	uCh := make(chan Update, 50)
+	qCh := make(chan Update, 500)
+	uCh := make(chan Update, 500)
 
 	QueryChan = qCh
 	UpdateChan = uCh

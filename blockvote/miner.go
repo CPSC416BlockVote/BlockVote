@@ -96,7 +96,7 @@ func NewMiner() *Miner {
 	return &Miner{
 		Storage:          &util.Database{},
 		ReceivedTxns:     make(map[string]bool),
-		TxnRecvChan:      make(chan *blockchain.Transaction, 100),
+		TxnRecvChan:      make(chan *blockchain.Transaction, 500),
 		BlockRecvChan:    make(chan *blockchain.Block, 50),
 		ChainUpdatedChan: make(chan int, 50),
 	}
