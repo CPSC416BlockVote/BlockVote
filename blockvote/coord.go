@@ -126,9 +126,9 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	// 1.3 Blockchain
 	c.InitBlockchain(resume)
 	// print chain to file if restart
-	if resume {
-		c.PrintChain()
-	}
+	//if resume {
+	//	c.PrintChain()
+	//}
 
 	// 2. Starting API services
 	coordIp := minerAPIListenAddr[0:strings.Index(minerAPIListenAddr, ":")]

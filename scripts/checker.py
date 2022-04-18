@@ -45,7 +45,7 @@ def main():
         conflict_txns.append(txns)
     conflict_txns = np.concatenate(conflict_txns)
 
-    print("[Check 1: all valid transactions are committed and appear extactly once]")
+    print("[Check 1: all valid transactions are committed and appear exactly once]")
     committed_txids = committed_txns[:, 0]
     res = [np.sum(committed_txids == txn[0]) == 1 for txn in valid_txns]
     if sum(res) == len(valid_txns):

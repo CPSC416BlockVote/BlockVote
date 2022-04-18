@@ -6,6 +6,8 @@ import (
 	"flag"
 	"github.com/DistributedClocks/tracing"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -24,6 +26,15 @@ func main() {
 			os.RemoveAll("./storage/coord")
 		}
 	}
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 	coord := blockvote.NewCoord()
+	go func() {
+		<-sigs
+		coord.PrintChain()
+		os.Exit(0)
+	}()
 	coord.Start(config.ClientAPIListenAddr, config.MinerAPIListenAddr, config.NCandidates, ctracer)
 }
