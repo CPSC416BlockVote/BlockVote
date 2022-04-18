@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	blockChain "cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/blockvote"
 	"cs.ubc.ca/cpsc416/BlockVote/evlib"
@@ -79,11 +80,20 @@ func main() {
 		blockChain.PrintBallot(&ballot)
 		txid := client.Vote(ballot)
 		if valid {
-			voterRecords[voterName] = append(voterRecords[voterName], Record{
-				TxID:      txid,
-				Name:      voterName,
-				Candidate: candidate,
-			})
+			dup := false
+			for _, r := range voterRecords[voterName] {
+				if bytes.Compare(r.TxID, txid) == 0 {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				voterRecords[voterName] = append(voterRecords[voterName], Record{
+					TxID:      txid,
+					Name:      voterName,
+					Candidate: candidate,
+				})
+			}
 		} else {
 			invalidRecords = append(invalidRecords, Record{
 				TxID:      txid,
@@ -98,11 +108,20 @@ func main() {
 			ballot.VoterCandidate = candidate
 			blockChain.PrintBallot(&ballot)
 			txid = client.Vote(ballot)
-			voterRecords[voterName] = append(voterRecords[voterName], Record{
-				TxID:      txid,
-				Name:      voterName,
-				Candidate: candidate,
-			})
+			dup := false
+			for _, r := range voterRecords[voterName] {
+				if bytes.Compare(r.TxID, txid) == 0 {
+					dup = true
+					break
+				}
+			}
+			if !dup {
+				voterRecords[voterName] = append(voterRecords[voterName], Record{
+					TxID:      txid,
+					Name:      voterName,
+					Candidate: candidate,
+				})
+			}
 		}
 		time.Sleep(time.Duration(rand.New(rand.NewSource(time.Now().UnixNano())).Intn(1000)) * time.Millisecond)
 	}

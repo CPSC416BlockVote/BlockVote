@@ -171,6 +171,13 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
 	for err != nil {
 		log.Println("[INFO] Reattempting to download data from coord...")
+		for {
+			// rpc connection is interrupted, need to reconnect
+			coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
+			if err == nil {
+				break
+			}
+		}
 		err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
 	}
 
@@ -212,13 +219,20 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 				continue
 			}
 			m.MemoryPool = reply.PeerTxnPool
+			log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
 			break
 		}
 		if i == len(downloadReply.PeerAddrList) {
 			// if all peers failed, contact coord again for updated peer address list
 			err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
 			for err != nil {
-				log.Println("[INFO] Reattempting to download data from coord...")
+				for {
+					// rpc connection is interrupted, need to reconnect
+					coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
+					if err == nil {
+						break
+					}
+				}
 				err = coordClient.Call("CoordAPIMiner.Download", DownloadArgs{}, &downloadReply)
 			}
 		} else {
@@ -260,8 +274,15 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	log.Println("[INFO] Registering...")
 	reply := RegisterReply{}
 	err = coordClient.Call("CoordAPIMiner.Register", RegisterArgs{m.Info}, &reply)
-	if err != nil {
-		return errors.New("cannot register as miner")
+	for err != nil {
+		for {
+			// rpc connection is interrupted, need to reconnect
+			coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
+			if err == nil {
+				break
+			}
+		}
+		err = coordClient.Call("CoordAPIMiner.Register", RegisterArgs{m.Info}, &reply)
 	}
 	gossip.SetPeers(reply.PeerGossipAddrList)
 
@@ -297,6 +318,7 @@ func (m *Miner) TxnService() {
 			// add unseen txn to pool
 			m.ReceivedTxns[sid] = true
 			m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns, *txn)
+			log.Printf("[INFO] Pool size %d (receive txn)\n", len(m.MemoryPool.PendingTxns))
 		}
 		m.mu.Unlock()
 	}
@@ -334,6 +356,7 @@ func (m *Miner) BlockService() {
 								i++
 							}
 						}
+						log.Printf("[INFO] Pool size %d (remove included txns)\n", len(m.MemoryPool.PendingTxns))
 						// notify mining service of new last hash
 						m.ChainUpdatedChan <- 1
 					} else {
@@ -366,6 +389,7 @@ func (m *Miner) BlockService() {
 							i++
 						}
 					}
+					log.Printf("[INFO] Pool size %d (switch fork)\n", len(m.MemoryPool.PendingTxns))
 					// notify mining service of new last hash
 					m.ChainUpdatedChan <- 1
 				}
@@ -418,6 +442,7 @@ func (m *Miner) MiningService() {
 							i++
 						}
 					}
+					log.Printf("[INFO] Pool size %d (remove invalid txns)\n", len(m.MemoryPool.PendingTxns))
 					// construct current block
 					height := m.Blockchain.Get(m.Blockchain.GetLastHash()).BlockNum + 1
 					block := blockchain.Block{
@@ -467,7 +492,7 @@ func (m *Miner) MiningService() {
 										i++
 									}
 								}
-								log.Printf("[INFO] Pool size %d\n", len(m.MemoryPool.PendingTxns))
+								log.Printf("[INFO] Pool size %d (remove included txns)\n", len(m.MemoryPool.PendingTxns))
 							}
 						}
 						m.mu.Unlock()
