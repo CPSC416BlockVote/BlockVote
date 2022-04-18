@@ -305,13 +305,13 @@ func sliceMinerList(mAddr string, minerList []string) []string {
 // Vote API provides the functionality of voting
 func (d *EV) Vote(ballot blockChain.Ballot) []byte {
 	// create wallet for voter, only when such voter is not exist
-	if !findVoterExist(ballot.VoterName, ballot.VoterStudentID) {
-		d.createVoterWallet(ballot)
-		voterInfo = append(voterInfo, VoterNameID{
-			Name: ballot.VoterName,
-			ID:   ballot.VoterStudentID,
-		})
-	}
+	//if !findVoterExist(ballot.VoterName, ballot.VoterStudentID) {
+	d.createVoterWallet(ballot)
+	voterInfo = append(voterInfo, VoterNameID{
+		Name: ballot.VoterName,
+		ID:   ballot.VoterStudentID,
+	})
+	//}
 
 	// create transaction
 	txn := d.createTransaction(ballot)

@@ -7,24 +7,24 @@ import os
 import psutil
 import random
 
+miners, miner_pids = [], []
+
 def boot(i):
     pid = subprocess.Popen(['bin\\416miner.exe', "-id", f"miner{i + 1}", "-addr", "127.0.0.1:" + str(27201 + i)], shell=True)
     print(f"miner {i+1} started.")
     return pid
 
 def boot_multi(num, max_id=0):
-    miners = []
-    miner_pids = []
     miner_ids = [i for i in range(max_id, num + max_id)]
     shuffle(miner_ids)
     for i in miner_ids:
         miners.append(boot(i))
-
+        time.sleep(0.1)
         for proc in psutil.process_iter():
             if proc.name() == "416miner.exe" and proc.pid not in miner_pids:
                 miner_pids.append(proc.pid)
                 break
-    return miners, miner_pids
+    return
 
 def main():
     parser = argparse.ArgumentParser(description='P2 Booting Script')
@@ -50,7 +50,7 @@ def main():
     # start miners
 
     print("Starting miners...")
-    miners, miner_pids = boot_multi(num_miners, max_id)
+    boot_multi(num_miners, max_id)
     max_id += num_miners
                 
     print("Done.\n")
@@ -83,9 +83,7 @@ def main():
             print("Killed miners:", killedPids)
             print("Active miners:", miner_pids)
         elif action[0] == "s":
-            temp_miners, temp_miner_pids = boot_multi(int(action.split()[1]), max_id)
-            miners += temp_miners
-            miner_pids += temp_miner_pids
+            boot_multi(int(action.split()[1]), max_id)
             max_id += int(action.split()[1])
             print("Active miners: ", miner_pids)
 

@@ -81,6 +81,9 @@ def main():
             voter = txn[1]
             committed_count = 0
         committed_count += count
+    if voter != "" and committed_count != 1:  # check last voter
+        print(voter)
+        flag = False
 
     if flag:
         print("Test Passed")
