@@ -5,6 +5,6 @@
   "TracingServerAddr": "127.0.0.1:25625",
   "Difficulty": 8,
   "Secret": "",
-  "MaxTxn": 5,
+  "MaxTxn": 10,
   "TracingIdentity": "miner1"
 }
