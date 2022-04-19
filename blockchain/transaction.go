@@ -97,13 +97,13 @@ func (tx *Transaction) Verify() bool {
 
 	curve := elliptic.P256()
 
-	txcopy := Transaction{
-		Data:      tx.Data,
-		ID:        tx.ID,
-		Signature: nil,
-		PublicKey: tx.PublicKey,
-	}
-	txcopy.ID = txcopy.Hash()
+	//txcopy := Transaction{
+	//	Data:      tx.Data,
+	//	ID:        tx.ID,
+	//	Signature: nil,
+	//	PublicKey: tx.PublicKey,
+	//}
+	//txcopy.ID = txcopy.Hash()
 
 	r := big.Int{}
 	s := big.Int{}
@@ -119,7 +119,7 @@ func (tx *Transaction) Verify() bool {
 	y.SetBytes(tx.PublicKey[(keyLen / 2):])
 
 	rawPubKey := ecdsa.PublicKey{Curve: curve, X: &x, Y: &y}
-	if ecdsa.Verify(&rawPubKey, txcopy.ID, &r, &s) == false {
+	if ecdsa.Verify(&rawPubKey, tx.ID, &r, &s) == false {
 		return false
 	}
 
