@@ -324,19 +324,6 @@ func (d *EV) Vote(ballot blockChain.Ballot) []byte {
 	if err != nil {
 		log.Panic(err)
 	}
-	//if !txn.Verify() {
-	//	v, o := findWalletAndAddr(ballot)
-	//	fmt.Println(txn.PublicKey)
-	//	fmt.Println(txn.Signature)
-	//	fmt.Println(ballot)
-	//	fmt.Println()
-	//	//v.CandidateData
-	//	fmt.Println(bytes.Compare(txn.PublicKey, v.Wallets[o].PublicKey))
-	//	fmt.Println(v.Wallets[o].PrivateKey)
-	//	fmt.Println(v.Wallets[o].PublicKey)
-	//	fmt.Println(len(v.Wallets))
-	//	panic("!!!!")
-	//}
 
 	var submitTxnReply *blockvote.SubmitTxnReply
 	for {

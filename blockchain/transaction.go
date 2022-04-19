@@ -70,13 +70,18 @@ func (tx *Transaction) SetID() {
 
 // Sign client
 func (tx *Transaction) Sign(privKey ecdsa.PrivateKey) {
+	txcopy := Transaction{
+		Data:      tx.Data,
+		ID:        tx.ID,
+		Signature: nil,
+		PublicKey: tx.PublicKey,
+	}
+	//tx.Signature = nil
 
-	tx.Signature = nil
-
-	tx.ID = tx.Hash()
+	txcopy.ID = txcopy.Hash()
 	//tx.PublicKey = nil
 
-	r, s, err := ecdsa.Sign(rand.Reader, &privKey, tx.ID)
+	r, s, err := ecdsa.Sign(rand.Reader, &privKey, txcopy.ID)
 	if err != nil {
 		log.Panic(err)
 	}
@@ -89,7 +94,16 @@ func (tx *Transaction) Sign(privKey ecdsa.PrivateKey) {
 // Verify blockchain
 func (tx *Transaction) Verify() bool {
 	//tx.ID = tx.Hash()
+
 	curve := elliptic.P256()
+
+	txcopy := Transaction{
+		Data:      tx.Data,
+		ID:        tx.ID,
+		Signature: nil,
+		PublicKey: tx.PublicKey,
+	}
+	txcopy.ID = txcopy.Hash()
 
 	r := big.Int{}
 	s := big.Int{}
@@ -105,7 +119,7 @@ func (tx *Transaction) Verify() bool {
 	y.SetBytes(tx.PublicKey[(keyLen / 2):])
 
 	rawPubKey := ecdsa.PublicKey{Curve: curve, X: &x, Y: &y}
-	if ecdsa.Verify(&rawPubKey, tx.ID, &r, &s) == false {
+	if ecdsa.Verify(&rawPubKey, txcopy.ID, &r, &s) == false {
 		return false
 	}
 
