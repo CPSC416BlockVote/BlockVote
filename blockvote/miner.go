@@ -244,11 +244,27 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	log.Println("[INFO] Setting up gossip client...")
 	var existingUpdates []gossip.Update
 	blockchainData, _ := m.Blockchain.Encode()
-	for _, data := range blockchainData {
+	for _, data := range blockchainData { // existing block updates
 		existingUpdates = append(existingUpdates, gossip.NewUpdate(BlockIDPrefix, blockchain.DecodeToBlock(data).Hash, data))
 	}
-	for _, txn := range m.MemoryPool.PendingTxns {
+	for _, txn := range m.MemoryPool.PendingTxns { // existing txn update from pool
 		existingUpdates = append(existingUpdates, gossip.NewUpdate(TransactionIDPrefix, txn.ID, txn.Serialize()))
+	}
+	iter := m.Blockchain.NewIterator(m.Blockchain.GetLastHash())
+	for block, end := iter.Next(); !end; block, end = iter.Next() { // existing txn update from the longest chain
+		for _, txn := range block.Txns {
+			exist := false
+			for idx, pendingTxn := range m.MemoryPool.PendingTxns { // check duplicate
+				if bytes.Compare(txn.ID, pendingTxn.ID) == 0 {
+					m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:idx], m.MemoryPool.PendingTxns[idx+1:]...)
+					exist = true
+					break
+				}
+			}
+			if !exist {
+				existingUpdates = append(existingUpdates, gossip.NewUpdate(TransactionIDPrefix, txn.ID, txn.Serialize()))
+			}
+		}
 	}
 	queryChan, updateChan, gossipAddr, err := gossip.Start(
 		2,
@@ -369,9 +385,9 @@ func (m *Miner) BlockService() {
 					log.Printf("[INFO] New block (%x) from peers is added to an alternative branch\n", block.Hash[:5])
 					blockchain.PrintBlock(block)
 					log.Println("[INFO] Switching to a new chain")
-					// first, add old txns that get kicked out b.c. it is not on the longest chain anymore
-					for _, oldTxn := range oldTxns {
-						m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns, *oldTxn)
+					// first, prepend old txns that get kicked out b.c. it is not on the longest chain anymore
+					for i := len(oldTxns) - 1; i >= 0; i-- {
+						m.MemoryPool.PendingTxns = append([]blockchain.Transaction{*oldTxns[i]}, m.MemoryPool.PendingTxns...)
 					}
 					// then, remove new transactions in the new fork from pool
 					// this includes the txns that are in the new block
@@ -436,7 +452,7 @@ func (m *Miner) MiningService() {
 					// remove invalid txns from pool
 					for i := 0; i < len(m.MemoryPool.PendingTxns) && len(invalidTxid) > 0; {
 						if bytes.Compare(invalidTxid[0], m.MemoryPool.PendingTxns[i].ID) == 0 {
-							invalidTxid = append(invalidTxid[:0], invalidTxid[1:]...)
+							invalidTxid = invalidTxid[1:]
 							m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
 						} else {
 							i++

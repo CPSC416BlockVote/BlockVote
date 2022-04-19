@@ -60,7 +60,7 @@ type VoterNameID struct {
 
 var quit chan bool
 var voterInfo []VoterNameID
-var thread = 60 * time.Second
+var thread = 35 * time.Second
 
 func (d *EV) connectCoord() {
 	// setup conn to coord

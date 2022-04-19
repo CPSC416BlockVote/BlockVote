@@ -54,7 +54,7 @@ def main():
         print("Test Failed")
         for succ, txn in zip(res, valid_txns):
             if not succ:
-                print(txn)
+                print("missing", txn)
 
     print("[Check 2: all invalid transactions will not be committed]")
     res = [np.sum(committed_txids == txn[0]) == 0 for txn in invalid_txns]
@@ -82,7 +82,7 @@ def main():
             committed_count = 0
         committed_count += count
     if voter != "" and committed_count != 1:  # check last voter
-        print(voter)
+        print(voter, "has", committed_count, "votes")
         flag = False
 
     if flag:
@@ -101,7 +101,7 @@ def main():
     flag = True
     for cand, count in votes:
         if voteCounts.get(cand, 0) != int(count):
-            print(cand, voteCounts.get(cand, 0), count)
+            print(f"{cand}: expected {voteCounts.get(cand, 0)} , got {count}")
             flag = False
 
     if flag:

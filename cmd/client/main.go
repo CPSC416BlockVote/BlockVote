@@ -8,12 +8,12 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"flag"
 	"fmt"
-	"github.com/DistributedClocks/tracing"
 	"log"
 	"math/rand"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -30,9 +30,19 @@ func main() {
 	util.CheckErr(err, "Error reading client config: %v\n", err)
 
 	// parse args
+	var thetis bool
+	var anvil bool
+	var remote bool
 	flag.UintVar(&config.ClientID, "id", config.ClientID, "client ID")
+	flag.BoolVar(&thetis, "thetis", false, "run client on thetis server")
+	flag.BoolVar(&anvil, "anvil", false, "run client on anvil server")
+	flag.BoolVar(&remote, "remote", false, "run client on remote server")
 	flag.Parse()
 	config.TracingIdentity = "client" + strconv.Itoa(int(config.ClientID))
+
+	if thetis || anvil || remote {
+		config.CoordIPPort = "thetis.students.cs.ubc.ca" + config.CoordIPPort[strings.Index(config.CoordIPPort, ":")+1:]
+	}
 
 	// redirect output to file
 	if len(os.Args) > 1 {
@@ -44,14 +54,14 @@ func main() {
 		log.SetOutput(f)
 	}
 
-	tracer := tracing.NewTracer(tracing.TracerConfig{
-		ServerAddress:  config.TracingServerAddr,
-		TracerIdentity: config.TracingIdentity,
-		Secret:         config.Secret,
-	})
+	//tracer := tracing.NewTracer(tracing.TracerConfig{
+	//	ServerAddress:  config.TracingServerAddr,
+	//	TracerIdentity: config.TracingIdentity,
+	//	Secret:         config.Secret,
+	//})
 
 	client := evlib.NewEV()
-	err = client.Start(tracer, config.ClientID, config.CoordIPPort)
+	err = client.Start(nil, config.ClientID, config.CoordIPPort)
 	util.CheckErr(err, "Error reading client config: %v\n", err)
 
 	// Add client operations here

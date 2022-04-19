@@ -274,6 +274,8 @@ func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte) boo
 	// when fork is nil, default to validate on the longest chain
 	// 1. verify signature
 	if !txn.Verify() {
+		log.Println("txn has invalid signature")
+		log.Println(txn)
 		return false
 	}
 	// 2. validate data
@@ -281,6 +283,8 @@ func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte) boo
 	for _, cand := range bc.Candidates {
 		// 2.1 candidates cannot vote
 		if bytes.Compare(txn.PublicKey, cand.Wallets[cand.GetAddress()].PublicKey) == 0 {
+			log.Println("candidates cannot vote")
+			log.Println(txn.Data)
 			return false
 		}
 		// 2.2 voter can only vote for candidates
@@ -289,6 +293,8 @@ func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte) boo
 		}
 	}
 	if !validCand {
+		log.Println("voter can only vote for candidates")
+		log.Println(txn.Data)
 		return false
 	}
 	// 2.3: voter can only vote once
@@ -308,6 +314,8 @@ func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte) boo
 	for block, end := iter.Next(); !end; block, end = iter.Next() {
 		for _, pastTxn := range block.Txns {
 			if bytes.Compare(pastTxn.PublicKey, txn.PublicKey) == 0 {
+				log.Println("voter has voted")
+				log.Println(txn.Data)
 				return false
 			}
 		}
@@ -327,6 +335,8 @@ func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool, fork []byte)
 	for _, txn := range txns {
 		if voterMap[fmt.Sprintf("%x", txn.PublicKey)] {
 			res = append(res, false)
+			log.Println("voter has voted in the same block")
+			log.Println(txn.Data)
 		} else {
 			res = append(res, bc._ValidateTxn(txn, false, fork))
 			if res[len(res)-1] {

@@ -59,9 +59,9 @@ def main():
 
     while True:
         # upon receiving keyboard interrupt:
-        print("\nEnter \"k n\" to kill miners, or")
-        print("Enter \"s n\" to start more miners, or")
-        action = input("Press ENTER to interupt...\n")
+        print("\nEnter \"k n\" to kill n miners, or")
+        print("Enter \"s n\" to start n more miners, or")
+        action = input("Press ENTER to kill all miners and exit...\n")
 
         if action == "":
             try:
