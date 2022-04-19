@@ -10,11 +10,11 @@ Group members: Zhongze Chen, Eric Lyu, Mingyang Ye, Xinyi Ye, Yitong Zhao
 
 1. Start coord (clean start):
 
-    `go run cmd/client/main.go`
+    `go run cmd/coord/main.go`
 
 2. Restart coord:
 
-    `go run cmd/client/main.go -r true`
+    `go run cmd/coord/main.go -r true`
 
 To interrupt coord, use `Ctrl + C`. A `txns.txt` file and a `votes.txt` file will be generated upon keyboard interrupt.
 
@@ -59,6 +59,6 @@ Then run command:
 ### Instructions
 
 To test the system, you can start coord, miners, clients in any order.
-Please make sure that there are at least 4 blocks with no transaction are received by coord
+Please make sure that at least 4 blocks with no transaction are received by coord
 after the last block that has transaction. 
 Then you can safely terminate everything and run the checker script.
