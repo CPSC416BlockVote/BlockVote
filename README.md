@@ -59,6 +59,6 @@ Then run command:
 ### Instructions
 
 To test the system, you can start coord, miners, clients in any order.
-Please make sure that there are at least 4 blocks with no transaction are received by coord
+Please make sure that at least 4 blocks with no transaction are received by coord
 after the last block that has transaction. 
 Then you can safely terminate everything and run the checker script.
