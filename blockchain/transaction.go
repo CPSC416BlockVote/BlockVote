@@ -88,7 +88,7 @@ func (tx *Transaction) Sign(privKey ecdsa.PrivateKey) {
 
 // Verify blockchain
 func (tx *Transaction) Verify() bool {
-
+	//tx.ID = tx.Hash()
 	curve := elliptic.P256()
 
 	r := big.Int{}

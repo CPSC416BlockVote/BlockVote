@@ -5,10 +5,13 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/blockvote"
 	"cs.ubc.ca/cpsc416/BlockVote/evlib"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
+	"flag"
 	"fmt"
 	"github.com/DistributedClocks/tracing"
 	"log"
 	"math/rand"
+	"os"
+	"strconv"
 	"time"
 )
 
@@ -17,6 +20,21 @@ func main() {
 	err := util.ReadJSONConfig("config/client2_config.json", &config)
 	util.CheckErr(err, "Error reading client config: %v\n", err)
 
+	// parse args
+	flag.UintVar(&config.ClientID, "id", config.ClientID, "client ID")
+	flag.Parse()
+	config.TracingIdentity = "client" + strconv.Itoa(int(config.ClientID))
+
+	// redirect output to file
+	if len(os.Args) > 1 {
+		f, err := os.Create("./logs/" + config.TracingIdentity + ".txt")
+		if err != nil {
+			log.Fatalf("error opening file: %v", err)
+		}
+		defer f.Close()
+		log.SetOutput(f)
+	}
+
 	tracer := tracing.NewTracer(tracing.TracerConfig{
 		ServerAddress:  config.TracingServerAddr,
 		TracerIdentity: config.TracingIdentity,
@@ -24,29 +42,33 @@ func main() {
 	})
 
 	client := evlib.NewEV()
-	err = client.Start(tracer, config.ClientID, config.CoordIPPort, config.LocalCoordIPPort, config.LocalMinerIPPort, config.N_Receives)
+	err = client.Start(tracer, config.ClientID, config.CoordIPPort, config.N_Receives)
 	util.CheckErr(err, "Error reading client config: %v\n", err)
 
 	// Add client operations here
-	//auto create ballots
-	voterNames := [10]string{"voter10", "voter11", "voter12", "voter13", "voter14", "voter15", "voter16", "voter17", "voter18", "voter19"}
-	voterIDs := [10]string{"1000", "2111", "3222", "4333", "5444", "6555", "7666", "8777", "9888", "1999"}
-	for i := 0; i < len(voterNames); i++ {
+
+	for i := 0; i < 120; i++ {
+		nVoters := 100
+		voter := strconv.Itoa(nVoters*int(config.ClientID-1) + rand.New(rand.NewSource(time.Now().UnixNano())).Intn(nVoters))
 		ballot := blockChain.Ballot{
-			voterNames[i],
-			voterIDs[i],
-			client.CandidateList[rand.Intn(10)],
+			VoterName:      "voter" + voter,
+			VoterStudentID: voter,
+			VoterCandidate: client.CandidateList[rand.Intn(10)],
 		}
-		fmt.Println(ballot)
-		err = client.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
-		time.Sleep(1 * time.Second)
-		if err != nil {
-			log.Panic(err)
+		blockChain.PrintBallot(&ballot)
+		client.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
+
+		if rand.New(rand.NewSource(time.Now().UnixNano())).Intn(6) == 0 {
+			// 16.7% chance sending a conflicting txn immediately after
+			ballot.VoterCandidate = client.CandidateList[rand.Intn(10)]
+			blockChain.PrintBallot(&ballot)
+			client.Vote(ballot.VoterName, ballot.VoterStudentID, ballot.VoterCandidate)
 		}
+		time.Sleep(time.Duration(rand.New(rand.NewSource(time.Now().UnixNano())).Intn(4000)) * time.Millisecond)
 	}
 
-	time.Sleep(30 * time.Second)
-	// query which block has confirmed txn with first txnID in the loop
+	time.Sleep(20 * time.Second)
+	// query which block has confirmed txn with txnID in the loop
 	for voter, txn := range client.VoterTxnMap {
 		fmt.Println("voter:", voter, "=>", "txnInfo:", txn.ID)
 		numConfirmed, err := client.GetBallotStatus(txn.ID)
@@ -54,6 +76,16 @@ func main() {
 			log.Panic(err)
 		}
 		fmt.Println("num of Confirmed txn: ", numConfirmed)
+	}
+
+	time.Sleep(40 * time.Second)
+	// query how many confirmed txn based on last txnID in the loop
+	for i := 0; i < len(client.CandidateList); i++ {
+		voters, err := client.GetCandVotes(client.CandidateList[i])
+		if err != nil {
+			log.Panic(err)
+		}
+		fmt.Println("checking ", client.CandidateList[i], " : ", voters)
 	}
 
 	time.Sleep(60 * time.Second)

@@ -25,10 +25,10 @@ type TxnInfo struct {
 
 type EV struct {
 	// Add EV instance state here.
-	rw               sync.RWMutex // mutex for arrays
-	connRw           sync.RWMutex // mutex for connections
-	voterWallet      wallet.Wallets
-	voterWalletAddr  string
+	rw     sync.RWMutex // mutex for arrays
+	connRw sync.RWMutex // mutex for connections
+	//voterWallet      wallet.Wallets
+	//voterWalletAddr  string
 	CandidateList    []string
 	minerIpPort      string
 	coordIPPort      string
@@ -54,8 +54,10 @@ func NewEV() *EV {
 
 // ----- evlib APIs -----
 type VoterNameID struct {
-	Name string
-	ID   string
+	Name            string
+	ID              string
+	voterWallet     wallet.Wallets
+	voterWalletAddr string
 }
 
 var quit chan bool
@@ -305,16 +307,36 @@ func sliceMinerList(mAddr string, minerList []string) []string {
 // Vote API provides the functionality of voting
 func (d *EV) Vote(ballot blockChain.Ballot) []byte {
 	// create wallet for voter, only when such voter is not exist
-	//if !findVoterExist(ballot.VoterName, ballot.VoterStudentID) {
-	d.createVoterWallet(ballot)
-	voterInfo = append(voterInfo, VoterNameID{
-		Name: ballot.VoterName,
-		ID:   ballot.VoterStudentID,
-	})
-	//}
+	if !findVoterExist(ballot.VoterName, ballot.VoterStudentID) {
+		voterWallet, addr := d.createVoterWallet(ballot)
+
+		voterInfo = append(voterInfo, VoterNameID{
+			Name:            ballot.VoterName,
+			ID:              ballot.VoterStudentID,
+			voterWallet:     *voterWallet,
+			voterWalletAddr: addr,
+		})
+		//log.Println(voterInfo)
+	}
 
 	// create transaction
-	txn := d.createTransaction(ballot)
+	txn, err := d.createTransaction(ballot)
+	if err != nil {
+		log.Panic(err)
+	}
+	//if !txn.Verify() {
+	//	v, o := findWalletAndAddr(ballot)
+	//	fmt.Println(txn.PublicKey)
+	//	fmt.Println(txn.Signature)
+	//	fmt.Println(ballot)
+	//	fmt.Println()
+	//	//v.CandidateData
+	//	fmt.Println(bytes.Compare(txn.PublicKey, v.Wallets[o].PublicKey))
+	//	fmt.Println(v.Wallets[o].PrivateKey)
+	//	fmt.Println(v.Wallets[o].PublicKey)
+	//	fmt.Println(len(v.Wallets))
+	//	panic("!!!!")
+	//}
 
 	var submitTxnReply *blockvote.SubmitTxnReply
 	for {
@@ -439,27 +461,42 @@ func createBallot() blockChain.Ballot {
 	return ballot
 }
 
-func (d *EV) createVoterWallet(ballot blockChain.Ballot) {
+func (d *EV) createVoterWallet(ballot blockChain.Ballot) (*wallet.Wallets, string) {
 	v, err := wallet.CreateVoter(ballot.VoterName, ballot.VoterStudentID)
 	if err != nil {
 		log.Panic(err)
 	}
-	d.voterWallet = *v
-	addr := d.voterWallet.AddWallet()
-	d.voterWalletAddr = addr
-	d.voterWallet.SaveFile()
+	voterWallet := v
+	addr := voterWallet.AddWallet()
+	//d.voterWalletAddr = addr
+	voterWallet.SaveFile()
+	return voterWallet, addr
+}
+func findWalletAndAddr(ballot blockChain.Ballot) (wallet.Wallets, string) {
+	for _, val := range voterInfo {
+		if val.ID == ballot.VoterStudentID && val.Name == ballot.VoterName {
+			return val.voterWallet, val.voterWalletAddr
+		}
+	}
+	return wallet.Wallets{}, ""
 }
 
-func (d *EV) createTransaction(ballot blockChain.Ballot) blockChain.Transaction {
+func (d *EV) createTransaction(ballot blockChain.Ballot) (blockChain.Transaction, error) {
+	voterWallet, voterWalletAddr := findWalletAndAddr(ballot)
+	if voterWalletAddr == "" {
+		return blockChain.Transaction{}, errors.New("Not such a voter exists.\n")
+	}
+
 	txn := blockChain.Transaction{
 		Data:      &ballot,
 		ID:        nil,
 		Signature: nil,
-		PublicKey: d.voterWallet.Wallets[d.voterWalletAddr].PublicKey,
+		PublicKey: voterWallet.Wallets[voterWalletAddr].PublicKey,
 	}
+	txn.ID = txn.Hash()
 	// client sign with private key
-	txn.Sign(d.voterWallet.Wallets[d.voterWalletAddr].PrivateKey)
-	return txn
+	txn.Sign(voterWallet.Wallets[voterWalletAddr].PrivateKey)
+	return txn, nil
 }
 
 //Client - Coord Interaction
