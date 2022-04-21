@@ -41,7 +41,7 @@ func main() {
 	config.TracingIdentity = "client" + strconv.Itoa(int(config.ClientID))
 
 	if thetis || anvil || remote {
-		config.CoordIPPort = "thetis.students.cs.ubc.ca" + config.CoordIPPort[strings.Index(config.CoordIPPort, ":")+1:]
+		config.CoordIPPort = "thetis.students.cs.ubc.ca" + config.CoordIPPort[strings.Index(config.CoordIPPort, ":"):]
 	}
 
 	// redirect output to file

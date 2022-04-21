@@ -9,19 +9,16 @@ import random
 
 clients, client_pids = [], []
 
-def boot(i, server=""):
-    cmd = ['./bin/416client', "-id", f"{i + 1}"]
-    if server != "":
-        cmd.append(f"-{server}")
-    pid = subprocess.Popen(cmd)
+def boot(i):
+    pid = subprocess.Popen(['./bin/416client', "-id", f"{i + 1}"])
     print(f"client {i+1} started.")
     return pid
 
-def boot_multi(num, max_id=0, server=""):
+def boot_multi(num, max_id=0):
     client_ids = [i for i in range(max_id, num + max_id)]
     shuffle(client_ids)
     for i in client_ids:
-        clients.append(boot(i, server))
+        clients.append(boot(i))
         time.sleep(0.1)
         for proc in psutil.process_iter():
             if proc.name() == "416client" and proc.pid not in client_pids:
@@ -33,23 +30,10 @@ def main():
     parser = argparse.ArgumentParser(description='P2 Booting Script')
     parser.add_argument('-n', type=int, default=4,
                         help='number of clients in the chain')
-    parser.add_argument('-thetis', action='store_true',
-                        help='run clients on thetis server')
-    parser.add_argument('-anvil', action='store_true',
-                        help='run clients on anvil server')
-    parser.add_argument('-remote', action='store_true',
-                        help='run clients on remote server')
     args = parser.parse_args()
 
     # system settings
     num_clients = args.n
-    server = ""
-    if args.thetis:
-        server = "thetis"
-    elif args.anvil:
-        server = "anvil"
-    elif args.remote:
-        server = "remote"
     max_id = 0
 
     # go build
@@ -66,7 +50,7 @@ def main():
     # start clients
 
     print("Starting clients...")
-    boot_multi(num_clients, max_id, server)
+    boot_multi(num_clients, max_id)
     max_id += num_clients
                 
     print("Done.\n")

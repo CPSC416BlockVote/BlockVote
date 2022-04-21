@@ -33,8 +33,8 @@ func main() {
 		ip = "remote.students.cs.ubc.ca"
 	}
 	if thetis || anvil || remote {
-		config.CoordAddr = "thetis.students.cs.ubc.ca" + config.CoordAddr[strings.Index(config.CoordAddr, ":")+1:]
-		config.MinerAddr = ip + config.MinerAddr[strings.Index(config.MinerAddr, ":")+1:]
+		config.CoordAddr = "thetis.students.cs.ubc.ca" + config.CoordAddr[strings.Index(config.CoordAddr, ":"):]
+		config.MinerAddr = ip + config.MinerAddr[strings.Index(config.MinerAddr, ":"):]
 	}
 
 	// redirect output to file

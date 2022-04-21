@@ -195,7 +195,7 @@ func Monitor(conn *net.UDPConn, remoteIpPort string, notifyCh chan<- FailureDete
 				break
 			} else if err != nil {
 				// other error
-				log.Println("[fcheck] Read error", err)
+				//log.Println("[fcheck] Read error", err)
 				time.Sleep(time.Duration(rtt) * time.Microsecond)
 				break
 			}

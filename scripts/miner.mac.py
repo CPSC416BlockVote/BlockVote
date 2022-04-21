@@ -9,20 +9,16 @@ import random
 
 miners, miner_pids = [], []
 
-def boot(i, server=""):
-    print(server)
-    cmd = ['./bin/416miner', "-id", f"miner{i + 1}", "-addr", "127.0.0.1:" + str(27201 + i)]
-    if server != "":
-        cmd.append(f"-{server}")
-    pid = subprocess.Popen(cmd)
+def boot(i):
+    pid = subprocess.Popen(['./bin/416miner', "-id", f"miner{i + 1}", "-addr", "127.0.0.1:" + str(27201 + i)])
     print(f"miner {i+1} started.")
     return pid
 
-def boot_multi(num, max_id=0, server=""):
+def boot_multi(num, max_id=0):
     miner_ids = [i for i in range(max_id, num + max_id)]
     shuffle(miner_ids)
     for i in miner_ids:
-        miners.append(boot(i, server))
+        miners.append(boot(i))
         time.sleep(0.1)
         for proc in psutil.process_iter():
             if proc.name() == "416miner" and proc.pid not in miner_pids:
@@ -34,23 +30,10 @@ def main():
     parser = argparse.ArgumentParser(description='P2 Booting Script')
     parser.add_argument('-n', type=int, default=4,
                         help='number of miners in the chain')
-    parser.add_argument('-thetis', action='store_true',
-                        help='run clients on thetis server')
-    parser.add_argument('-anvil', action='store_true',
-                        help='run clients on anvil server')
-    parser.add_argument('-remote', action='store_true',
-                        help='run clients on remote server')
     args = parser.parse_args()
 
     # system settings
     num_miners = args.n
-    server = ""
-    if args.thetis:
-        server = "thetis"
-    elif args.anvil:
-        server = "anvil"
-    elif args.remote:
-        server = "remote"
     max_id = 0
 
     # go build
@@ -67,7 +50,7 @@ def main():
     # start miners
 
     print("Starting miners...")
-    boot_multi(num_miners, max_id, server)
+    boot_multi(num_miners, max_id)
     max_id += num_miners
                 
     print("Done.\n")
@@ -99,7 +82,7 @@ def main():
             print("Killed miners:", killedPids)
             print("Active miners:", miner_pids)
         elif action[0] == "s":
-            boot_multi(int(action.split()[1]), max_id, server)
+            boot_multi(int(action.split()[1]), max_id)
             max_id += int(action.split()[1])
             print("Active miners: ", miner_pids)
 

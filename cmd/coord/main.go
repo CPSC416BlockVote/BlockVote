@@ -30,9 +30,9 @@ func main() {
 	}
 	if thetis {
 		config.MinerAPIListenAddr = "thetis.students.cs.ubc.ca" +
-			config.MinerAPIListenAddr[strings.Index(config.MinerAPIListenAddr, ":")+1:]
+			config.MinerAPIListenAddr[strings.Index(config.MinerAPIListenAddr, ":"):]
 		config.ClientAPIListenAddr = "thetis.students.cs.ubc.ca" +
-			config.ClientAPIListenAddr[strings.Index(config.ClientAPIListenAddr, ":")+1:]
+			config.ClientAPIListenAddr[strings.Index(config.ClientAPIListenAddr, ":"):]
 	}
 
 	sigs := make(chan os.Signal, 1)
