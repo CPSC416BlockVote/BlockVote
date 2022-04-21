@@ -40,6 +40,12 @@ To interrupt coord, use `Ctrl + C`. A `txns.txt` file and a `votes.txt` file wil
 
     Three `.txt` files will be generated after the client sending all transactions to miners.
 
+2. Start multiple clients using the Python script:
+
+   `python scripts/client.py -n [number of clients]`
+
+   To see client outputs, go to `logs` folder and look for `client[x].txt`
+
 ## Testing
 
 ### Criteria

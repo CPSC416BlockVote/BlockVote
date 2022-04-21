@@ -14,6 +14,7 @@ import (
 var LastHashKey = []byte("LastHash")
 
 const BlockKeyPrefix = "block-"
+const NumConfirmed = 4
 
 type BlockChain struct {
 	mu         sync.Mutex
@@ -142,7 +143,8 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 		return
 	}
 	if !bc.Exist(block.PrevHash) {
-		log.Println("[WARN] Previous block does not exist and the block will not be added to the chain.")
+		log.Printf("[WARN] Previous block (%x) does not exist and "+
+			"the block (%x) will not be added to the chain.\n", block.PrevHash[:5], block.Hash[:5])
 		success = false
 		return
 	}
@@ -157,12 +159,14 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 		// validate pow
 		pow := NewProof(&block)
 		if !pow.Validate() {
+			log.Println("invalid pow")
 			success = false
 			return
 		}
 		// validate txns (use the chain that the block is on, not necessarily the longest)
 		for _, valid := range bc._ValidateTxns(block.Txns, false, block.PrevHash) {
 			if !valid {
+				log.Println("invalid txns")
 				success = false
 				return
 			}
@@ -275,7 +279,7 @@ func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte) boo
 	// 1. verify signature
 	if !txn.Verify() {
 		log.Println("txn has invalid signature")
-		log.Println(txn)
+		log.Println(txn.Data, fmt.Sprintf("%x, %x", txn.Signature, txn.PublicKey))
 		return false
 	}
 	// 2. validate data
@@ -389,7 +393,7 @@ func (bc *BlockChain) VotingStatus() (votes []uint, txns []Transaction) {
 	bc.mu.Lock()
 	iter := bc.NewIterator(bc.LastHash)
 	bc.mu.Unlock()
-	skip := 4 // last four blocks do not count
+	skip := NumConfirmed // last NUM_CONFIRMED blocks do not count
 	for block, end := iter.Next(); !end; block, end = iter.Next() {
 		if skip > 0 {
 			skip--

@@ -168,6 +168,8 @@ func main() {
 	}
 	fc.Sync()
 
+	log.Println("All voters have voted. Sleeping...")
+
 	time.Sleep(45 * time.Second)
 
 	for i := 0; i < 15; i++ {
@@ -203,6 +205,8 @@ func main() {
 		}
 		log.Println("checking ", client.CandidateList[i], " : ", voters)
 	}
+
+	log.Println("All operations are completed. Sleeping...")
 
 	// Wait for interrupt signal to exit
 	sigs := make(chan os.Signal, 1)

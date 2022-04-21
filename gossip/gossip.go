@@ -69,7 +69,7 @@ var (
 	PendingPushQueue chan PendingPush // pending updates (from the client or peers) that need to be pushed
 
 	rw        sync.RWMutex
-	UpdateMap map[string]Update // stores every update // FIXME: concurrent map read and map write
+	UpdateMap map[string]Update // stores every update
 	UpdateLog []string          // update id history
 	FanOut    uint8             // number of connections
 	PeerList  []string          // peer addresses
@@ -372,7 +372,7 @@ func PushService() {
 							_ = conn.Call("RPCHandler.Retransmit", args, &reply)
 						}
 					} else if mode == "PushPull" {
-						time.Sleep(time.Duration(rand.New(rand.NewSource(time.Now().UnixNano())).Intn(5000)) * time.Millisecond)
+						time.Sleep(time.Duration(rand.New(rand.NewSource(time.Now().UnixNano())).Intn(2500)) * time.Millisecond)
 						args := PushPullArgs{
 							Identity:  identity,
 							Update:    pendingPush.Update,
