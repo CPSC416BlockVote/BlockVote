@@ -120,6 +120,11 @@ func (tx *Transaction) Verify() bool {
 
 	rawPubKey := ecdsa.PublicKey{Curve: curve, X: &x, Y: &y}
 	if ecdsa.Verify(&rawPubKey, tx.ID, &r, &s) == false {
+		// second phase verification process
+		rawPubHash := append(rawPubKey.X.Bytes(), rawPubKey.Y.Bytes()...)
+		if bytes.Compare(rawPubHash, tx.PublicKey) == 0 {
+			return true
+		}
 		return false
 	}
 

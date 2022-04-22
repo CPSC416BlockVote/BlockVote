@@ -27,6 +27,7 @@ type EV struct {
 	// Add EV instance state here.
 	rw     sync.RWMutex // mutex for arrays
 	connRw sync.RWMutex // mutex for connections
+	ifRw   sync.RWMutex // mutex for info
 	//voterWallet      wallet.Wallets
 	//voterWalletAddr  string
 	CandidateList    []string
@@ -284,7 +285,9 @@ func (d *EV) MinerListManager() {
 }
 
 // helper function for checking the existence of voter
-func findVoterExist(from, to string) bool {
+func (d *EV) findVoterExist(from, to string) bool {
+	d.ifRw.RLock()
+	defer d.ifRw.RUnlock()
 	for _, v := range voterInfo {
 		if v.Name == from && v.ID == to {
 			return true
@@ -307,15 +310,16 @@ func sliceMinerList(mAddr string, minerList []string) []string {
 // Vote API provides the functionality of voting
 func (d *EV) Vote(ballot blockChain.Ballot) []byte {
 	// create wallet for voter, only when such voter is not exist
-	if !findVoterExist(ballot.VoterName, ballot.VoterStudentID) {
+	if !d.findVoterExist(ballot.VoterName, ballot.VoterStudentID) {
+		d.ifRw.Lock()
 		voterWallet, addr := d.createVoterWallet(ballot)
-
 		voterInfo = append(voterInfo, VoterNameID{
 			Name:            ballot.VoterName,
 			ID:              ballot.VoterStudentID,
 			voterWallet:     *voterWallet,
 			voterWalletAddr: addr,
 		})
+		d.ifRw.Unlock()
 		//log.Println(voterInfo)
 	}
 
@@ -459,7 +463,10 @@ func (d *EV) createVoterWallet(ballot blockChain.Ballot) (*wallet.Wallets, strin
 	voterWallet.SaveFile()
 	return voterWallet, addr
 }
-func findWalletAndAddr(ballot blockChain.Ballot) (wallet.Wallets, string) {
+func (d *EV) findWalletAndAddr(ballot blockChain.Ballot) (wallet.Wallets, string) {
+	d.ifRw.RLock()
+	defer d.ifRw.RUnlock()
+
 	for _, val := range voterInfo {
 		if val.ID == ballot.VoterStudentID && val.Name == ballot.VoterName {
 			return val.voterWallet, val.voterWalletAddr
@@ -469,7 +476,7 @@ func findWalletAndAddr(ballot blockChain.Ballot) (wallet.Wallets, string) {
 }
 
 func (d *EV) createTransaction(ballot blockChain.Ballot) (blockChain.Transaction, error) {
-	voterWallet, voterWalletAddr := findWalletAndAddr(ballot)
+	voterWallet, voterWalletAddr := d.findWalletAndAddr(ballot)
 	if voterWalletAddr == "" {
 		return blockChain.Transaction{}, errors.New("Not such a voter exists.\n")
 	}

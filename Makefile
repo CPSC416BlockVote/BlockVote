@@ -1,6 +1,6 @@
 .PHONY: client tracing clean all
 
-all: miner miner2 coord client client2 tracing
+all: tracing miner miner2 coord client client2
 
 miner:
 	go build -o bin/miner ./cmd/miner
