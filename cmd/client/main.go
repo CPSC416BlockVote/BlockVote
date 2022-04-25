@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -30,22 +29,13 @@ func main() {
 	util.CheckErr(err, "Error reading client config: %v\n", err)
 
 	// parse args
-	var thetis bool
-	var anvil bool
-	var remote bool
+	var redirect bool
 	flag.UintVar(&config.ClientID, "id", config.ClientID, "client ID")
-	flag.BoolVar(&thetis, "thetis", false, "run client on thetis server")
-	flag.BoolVar(&anvil, "anvil", false, "run client on anvil server")
-	flag.BoolVar(&remote, "remote", false, "run client on remote server")
+	flag.BoolVar(&redirect, "redirect", false, "redirect outputs to file")
 	flag.Parse()
-	config.TracingIdentity = "client" + strconv.Itoa(int(config.ClientID))
-
-	if thetis || anvil || remote {
-		config.CoordIPPort = "thetis.students.cs.ubc.ca" + config.CoordIPPort[strings.Index(config.CoordIPPort, ":"):]
-	}
 
 	// redirect output to file
-	if len(os.Args) > 1 {
+	if redirect {
 		f, err := os.Create("./logs/" + config.TracingIdentity + ".txt")
 		if err != nil {
 			log.Fatalf("error opening file: %v", err)
@@ -53,12 +43,6 @@ func main() {
 		defer f.Close()
 		log.SetOutput(f)
 	}
-
-	//tracer := tracing.NewTracer(tracing.TracerConfig{
-	//	ServerAddress:  config.TracingServerAddr,
-	//	TracerIdentity: config.TracingIdentity,
-	//	Secret:         config.Secret,
-	//})
 
 	client := evlib.NewEV()
 	err = client.Start(nil, config.ClientID, config.CoordIPPort)

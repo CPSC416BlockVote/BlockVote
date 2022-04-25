@@ -126,8 +126,8 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort strin
 
 	log.Println("[INFO] Retrieving miner list from coord...")
 	// no need to retry when failed.
-	var minerListReply *blockvote.GetMinerListReply
-	err := d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
+	var minerListReply *blockvote.GetEntryPointsReply
+	err := d.coordClient.Call("CoordAPIClient.GetEntryPoints", blockvote.GetEntryPointsArgs{}, &minerListReply)
 	if err == nil {
 		d.MinerAddrList = minerListReply.MinerAddrList
 	}
@@ -149,30 +149,6 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort strin
 	go func() {
 		// call coord for list of active miners with length N_Receives
 		for {
-			//var minerListReply *blockvote.GetMinerListReply
-			//for {
-			//	d.connRw.RLock()
-			//	err := d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
-			//	d.connRw.RUnlock()
-			//	if err == nil && len(minerListReply.MinerAddrList) > 0 {
-			//		break
-			//	} else if err != nil {
-			//		d.ComplainCoordChan <- 1
-			//		time.Sleep(2 * time.Second)
-			//	} else {
-			//		log.Println("[WARN] No available miner. Waiting...")
-			//		time.Sleep(5 * time.Second)
-			//	}
-			//}
-			//
-			//// random pick one miner addr
-			//index := 0
-			//d.MinerAddrList = minerListReply.MinerAddrList
-			//if len(d.MinerAddrList) > 1 {
-			//	index = rand.Intn(len(d.MinerAddrList) - 1)
-			//}
-			//d.minerIpPort = d.MinerAddrList[index]
-
 			d.rw.RLock()
 			allTxns := d.TxnInfos[:]
 			d.rw.RUnlock()
@@ -181,11 +157,11 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort strin
 				if !txnInfo.confirmed && time.Now().Sub(txnInfo.submitTime) > thread {
 					// start query status
 					var queryTxnReply *blockvote.QueryTxnReply
-					d.connRw.RLock()
-					err = d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
+					conn := d.connectMiner()
+					err = conn.Call("EntryPointAPI.QueryTxn", blockvote.QueryTxnArgs{
 						TxID: txnInfo.txn.ID,
 					}, &queryTxnReply)
-					d.connRw.RUnlock()
+					_ = conn.Close()
 					if err == nil {
 						if queryTxnReply.NumConfirmed > -1 {
 							d.rw.Lock()
@@ -198,9 +174,6 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort strin
 							d.TxnInfos[idx].submitTime = time.Now() // we can do this b.c. TxnInfos is append only
 							d.rw.Unlock()
 						}
-					} else {
-						// try again in the next cycle!
-						d.ComplainCoordChan <- 1
 					}
 				}
 			}
@@ -250,11 +223,11 @@ func (d *EV) MinerListManager() {
 		case <-d.ComplainMinerChan:
 			{
 				log.Println("[INFO] Retrieving miner list from coord...")
-				var minerListReply *blockvote.GetMinerListReply
+				var minerListReply *blockvote.GetEntryPointsReply
 				for {
 					// retrieve miner list
 					d.connRw.RLock()
-					err := d.coordClient.Call("CoordAPIClient.GetMinerList", blockvote.GetMinerListArgs{}, &minerListReply)
+					err := d.coordClient.Call("CoordAPIClient.GetEntryPoints", blockvote.GetEntryPointsArgs{}, &minerListReply)
 					d.connRw.RUnlock()
 					if err == nil {
 						d.rw.Lock()
@@ -333,7 +306,7 @@ func (d *EV) Vote(ballot blockChain.Ballot) []byte {
 	for {
 		// connect to miner
 		conn := d.connectMiner()
-		err := conn.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
+		err := conn.Call("EntryPointAPI.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
 		conn.Close()
 		if err == nil {
 			d.rw.Lock()
@@ -357,7 +330,7 @@ func (d *EV) submitTxn(txn blockChain.Transaction) {
 	for {
 		// setup conn to miner
 		conn := d.connectMiner()
-		err := conn.Call("MinerAPIClient.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
+		err := conn.Call("EntryPointAPI.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
 		conn.Close()
 		if err == nil {
 			break
@@ -372,15 +345,14 @@ func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
 	//retry := 0
 	var queryTxnReply *blockvote.QueryTxnReply
 	for {
-		d.connRw.RLock()
-		err := d.coordClient.Call("CoordAPIClient.QueryTxn", blockvote.QueryTxnArgs{
+		conn := d.connectMiner()
+		err := conn.Call("EntryPointAPI.QueryTxn", blockvote.QueryTxnArgs{
 			TxID: TxID,
 		}, &queryTxnReply)
-		d.connRw.RUnlock()
+		_ = conn.Close()
 		if err == nil {
 			break
 		} else {
-			d.ComplainCoordChan <- 1
 			time.Sleep(2 * time.Second)
 		}
 	}
@@ -394,13 +366,12 @@ func (d *EV) GetCandVotes(candidate string) (uint, error) {
 	}
 	var queryResultReply *blockvote.QueryResultsReply
 	for {
-		d.connRw.RLock()
-		err := d.coordClient.Call("CoordAPIClient.QueryResults", blockvote.QueryResultsArgs{}, &queryResultReply)
-		d.connRw.RUnlock()
+		conn := d.connectMiner()
+		err := conn.Call("EntryPointAPI.QueryResults", blockvote.QueryResultsArgs{}, &queryResultReply)
+		_ = conn.Close()
 		if err == nil {
 			break
 		} else {
-			d.ComplainCoordChan <- 1
 			time.Sleep(2 * time.Second)
 		}
 	}

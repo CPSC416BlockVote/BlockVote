@@ -130,9 +130,9 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, diffic
 	log.Println("[INFO] Listen to coord's API requests at", m.Info.CoordListenAddr)
 
 	// << client
-	minerAPIClient := new(MinerAPIClient)
-	minerAPIClient.m = m
-	clientListenAddr, err := util.NewRPCServerWithIp(minerAPIClient, minerIP)
+	entryPointAPI := new(EntryPointAPI)
+	entryPointAPI.e = m
+	clientListenAddr, err := util.NewRPCServerWithIp(entryPointAPI, minerIP)
 	if err != nil {
 		return errors.New("cannot start API service for client")
 	}
@@ -579,10 +579,6 @@ type MinerAPIMiner struct {
 	m *Miner
 }
 
-func (api *MinerAPIMiner) GetBlock(args GetBlockArgs, reply *GetBlockReply) error {
-	return nil
-}
-
 func (api *MinerAPIMiner) GetTxnPool(args GetTxnPoolArgs, reply *GetTxnPoolReply) error {
 	reply.PeerTxnPool = api.m.MemoryPool
 	return nil
@@ -590,16 +586,46 @@ func (api *MinerAPIMiner) GetTxnPool(args GetTxnPoolArgs, reply *GetTxnPoolReply
 
 // ----- APIs for client
 
-type MinerAPIClient struct {
-	m *Miner
+func (m *Miner) ReceiveTxn(txn *blockchain.Transaction) {
+	// internal processing
+	m.TxnRecvChan <- txn
+	// broadcast
+	m.updateChan <- gossip.NewUpdate(TransactionIDPrefix, txn.ID, txn.Serialize())
+}
+
+func (m *Miner) CheckTxn(txID []byte) int {
+	return m.Blockchain.TxnStatus(txID)
+}
+
+func (m *Miner) CheckResults() []uint {
+	votes, _ := m.Blockchain.VotingStatus()
+	return votes
+}
+
+type EntryPoint interface {
+	ReceiveTxn(*blockchain.Transaction)
+	CheckTxn([]byte) int
+	CheckResults() []uint
+}
+
+type EntryPointAPI struct {
+	e EntryPoint
 }
 
 // SubmitTxn is for client to submit a transaction. This function is non-blocking.
-func (api *MinerAPIClient) SubmitTxn(args SubmitTxnArgs, reply *SubmitTxnReply) error {
-	// internal processing
-	api.m.TxnRecvChan <- &(args.Txn)
-	// broadcast
-	api.m.updateChan <- gossip.NewUpdate(TransactionIDPrefix, args.Txn.ID, args.Txn.Serialize())
+func (api *EntryPointAPI) SubmitTxn(args SubmitTxnArgs, reply *SubmitTxnReply) error {
+	api.e.ReceiveTxn(&args.Txn)
+	return nil
+}
 
+// QueryTxn queries a transaction in the system and returns the number of blocks that confirm it.
+func (api *EntryPointAPI) QueryTxn(args QueryTxnArgs, reply *QueryTxnReply) error {
+	*reply = QueryTxnReply{NumConfirmed: api.e.CheckTxn(args.TxID)}
+	return nil
+}
+
+func (api *EntryPointAPI) QueryResults(_ QueryResultsArgs, reply *QueryResultsReply) error {
+	votes := api.e.CheckResults()
+	*reply = QueryResultsReply{Votes: votes}
 	return nil
 }

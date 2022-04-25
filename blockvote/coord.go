@@ -70,10 +70,10 @@ type (
 		Candidates [][]byte
 	}
 
-	GetMinerListArgs struct {
+	GetEntryPointsArgs struct {
 	}
 
-	GetMinerListReply struct {
+	GetEntryPointsReply struct {
 		MinerAddrList []string
 	}
 
@@ -100,11 +100,13 @@ type Coord struct {
 
 	Candidates []*Identity.Wallets
 
-	nlMu       sync.Mutex // lock NodeList & MinerConns
-	NodeList   []NodeInfo
-	MinerConns []*rpc.Client
+	nlMu             sync.Mutex // lock NodeList & MinerConns
+	NodeList         []NodeInfo
+	MinerConns       []*rpc.Client
+	EntryPointIpPort string
 
 	GossipAddr string
+	UpdateChan chan<- gossip.Update
 }
 
 func NewCoord() *Coord {
@@ -125,10 +127,6 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	c.InitCandidates(nCandidates, resume)
 	// 1.3 Blockchain
 	c.InitBlockchain(resume)
-	// print chain to file if restart
-	//if resume {
-	//	c.PrintChain()
-	//}
 
 	// 2. Starting API services
 	coordIp := minerAPIListenAddr[0:strings.Index(minerAPIListenAddr, ":")]
@@ -138,7 +136,7 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	for _, data := range blockchainData {
 		existingUpdates = append(existingUpdates, gossip.NewUpdate(BlockIDPrefix, blockchain.DecodeToBlock(data).Hash, data))
 	}
-	queryChan, _, gossipAddr, err := gossip.Start(2,
+	queryChan, updateChan, gossipAddr, err := gossip.Start(2,
 		"Pull",
 		coordIp,
 		//[]string{},
@@ -149,6 +147,7 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 		return err
 	}
 	c.GossipAddr = gossipAddr
+	c.UpdateChan = updateChan
 	// 1.4 NodeList
 	c.InitNodeList(resume)
 
@@ -186,6 +185,16 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 		return errors.New("cannot start API service for client")
 	}
 	log.Println("[INFO] Listen to clients' API requests at", clientAPIListenAddr)
+
+	// >> entry point
+	entryPointAPI := new(EntryPointAPI)
+	entryPointAPI.e = c
+	entryPointListenAddr, err := util.NewRPCServerWithIp(entryPointAPI, coordIp)
+	if err != nil {
+		return errors.New("cannot start entry point API service")
+	}
+	c.EntryPointIpPort = entryPointListenAddr
+	log.Println("[INFO] Listen to clients' API requests at", c.EntryPointIpPort)
 
 	// 3. receive blocks from miners
 	for {
@@ -484,27 +493,30 @@ func (api *CoordAPIClient) GetCandidates(args GetCandidatesArgs, reply *GetCandi
 	return nil
 }
 
-func (api *CoordAPIClient) GetMinerList(args GetMinerListArgs, reply *GetMinerListReply) error {
+func (api *CoordAPIClient) GetEntryPoints(args GetEntryPointsArgs, reply *GetEntryPointsReply) error {
 	api.c.nlMu.Lock()
 	defer api.c.nlMu.Unlock()
 
-	var minerAddrList []string
+	// access points consist of api listeners of coord and all miners
+	accessPoints := []string{api.c.EntryPointIpPort}
 	for _, info := range api.c.NodeList {
-		minerAddrList = append(minerAddrList, info.Property.ClientListenAddr)
+		accessPoints = append(accessPoints, info.Property.ClientListenAddr)
 	}
 
-	*reply = GetMinerListReply{MinerAddrList: minerAddrList}
+	*reply = GetEntryPointsReply{MinerAddrList: accessPoints}
 	return nil
 }
 
-// QueryTxn queries a transaction in the system and returns the number of blocks that confirm it.
-func (api *CoordAPIClient) QueryTxn(args QueryTxnArgs, reply *QueryTxnReply) error {
-	*reply = QueryTxnReply{NumConfirmed: api.c.Blockchain.TxnStatus(args.TxID)}
-	return nil
+func (c *Coord) ReceiveTxn(txn *blockchain.Transaction) {
+	// broadcast
+	c.UpdateChan <- gossip.NewUpdate(TransactionIDPrefix, txn.ID, txn.Serialize())
 }
 
-func (api *CoordAPIClient) QueryResults(_ QueryResultsArgs, reply *QueryResultsReply) error {
-	votes, _ := api.c.Blockchain.VotingStatus()
-	*reply = QueryResultsReply{Votes: votes}
-	return nil
+func (c *Coord) CheckTxn(txID []byte) int {
+	return c.Blockchain.TxnStatus(txID)
+}
+
+func (c *Coord) CheckResults() []uint {
+	votes, _ := c.Blockchain.VotingStatus()
+	return votes
 }
