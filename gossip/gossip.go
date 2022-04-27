@@ -1,14 +1,23 @@
 package gossip
 
 import (
+	"bytes"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
+	"encoding/gob"
 	"errors"
 	"fmt"
 	"log"
 	"math/rand"
 	"net/rpc"
+	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	BlockIDPrefix       = "block-"
+	TransactionIDPrefix = "txn-"
+	NodeIDPrefix        = "node-"
 )
 
 type Update struct {
@@ -16,11 +25,37 @@ type Update struct {
 	Data []byte
 }
 
+type Peer struct {
+	Identifier string
+	GossipAddr string
+	APIAddr    string
+	Active     bool
+}
+
+func (p *Peer) Encode() []byte {
+	var buf bytes.Buffer
+	err := gob.NewEncoder(&buf).Encode(p)
+	if err != nil {
+		log.Println("[WARN] peer encode error")
+	}
+	return buf.Bytes()
+}
+
+func DecodeToPeer(data []byte) Peer {
+	peer := Peer{}
+	err := gob.NewDecoder(bytes.NewReader(data)).Decode(&peer)
+	if err != nil {
+		log.Println("[ERROR] block decode error")
+		log.Fatal(err)
+	}
+	return peer
+}
+
 // messages
 
 type (
 	PushArgs struct { // Note: Update needs to be the last of UpdateLog
-		Identity  string
+		From      Peer
 		Update    Update
 		UpdateLog []string
 	}
@@ -28,7 +63,7 @@ type (
 		MissingUpdates []string
 	}
 	PushPullArgs struct { // Note: Update needs to be the last of UpdateLog
-		Identity  string
+		From      Peer
 		Update    Update
 		UpdateLog []string
 	}
@@ -37,15 +72,14 @@ type (
 		MissingUpdates []string
 	}
 	PullArgs struct {
-		Identity  string
+		From      Peer
 		UpdateLog []string
 	}
 	PullReply struct {
 		Updates []Update
 	}
 	RetransmitArgs struct {
-		Identity string
-		Updates  []Update
+		Updates []Update
 	}
 	RetransmitReply struct {
 	}
@@ -60,7 +94,7 @@ var (
 	verbose         bool
 	running         bool
 	mode            string // operating mode of gossip protocol. ["Push", "PushPull", "Pull"]
-	identity        string // gossip client identifier.
+	Identity        Peer   // gossip client identifier.
 	localListenAddr string
 
 	QueryChan  chan<- Update // for gossip client to query updates
@@ -72,7 +106,7 @@ var (
 	UpdateMap map[string]Update // stores every update
 	UpdateLog []string          // update id history
 	FanOut    uint8             // number of connections
-	PeerList  []string          // peer addresses
+	PeerList  []Peer            // peer addresses
 
 	ExitSignal chan int
 )
@@ -83,9 +117,9 @@ type RPCHandler struct {
 func Start(fanOut uint8, // number of connections
 	operatingMode string, // operating mode of gossip protocol. ["Push", "PushPull", "Pull"]
 	localIp string,
-	//peers []string, // peer addresses
+	peers []Peer, // initial peer addresses
 	initialUpdates []Update, // all updates client has to date
-	clientIdentity string, // gossip client identifier
+	clientIdentity Peer, // gossip client identifier
 	logging bool, // whether to print
 ) (queryChan <-chan Update, updateChan chan<- Update, localAddr string, err error) {
 	if running {
@@ -93,7 +127,7 @@ func Start(fanOut uint8, // number of connections
 	}
 	running = true
 	mode = operatingMode
-	identity = clientIdentity
+	Identity = clientIdentity
 	verbose = logging
 
 	qCh := make(chan Update, 500)
@@ -119,7 +153,10 @@ func Start(fanOut uint8, // number of connections
 		return nil, nil, "", err
 	}
 	Verbose("listen to gossips at " + localListenAddr)
-	//SetPeers(peers) // set peers should be called only after local address is assigned
+	Identity.GossipAddr = localListenAddr
+	setPeers(peers) // set peers should be called only after local address is assigned
+	// push its info to peers
+	uCh <- NewUpdate(NodeIDPrefix, []byte(Identity.Identifier), Identity.Encode())
 
 	go DigestLocalUpdateService()
 
@@ -136,37 +173,75 @@ func Start(fanOut uint8, // number of connections
 	return qCh, uCh, localListenAddr, nil
 }
 
-func SetPeers(peers []string) {
-	rw.Lock()
-	defer rw.Unlock()
+func setPeers(peers []Peer) {
 	// find self
 	i := 0
 	for ; i < len(peers); i++ {
-		if peers[i] == localListenAddr {
+		if peers[i].GossipAddr == localListenAddr {
 			break
 		}
 	}
+
+	rw.Lock()
+	defer rw.Unlock()
 	// exclude self
 	if i < len(peers) {
 		PeerList = append(peers[:i], peers[i+1:]...)
+	} else {
+		PeerList = peers
 	}
 }
 
-func AddPeer(peer string) {
-	rw.Lock()
-	defer rw.Unlock()
-	if peer != localListenAddr {
+// internal function for adding a peer to peer list.
+// lock should be acquired by the caller function.
+func addPeer(peer Peer) {
+	if peer.GossipAddr != localListenAddr {
+		for _, p := range PeerList {
+			if p.GossipAddr == peer.GossipAddr {
+				return
+			}
+		}
 		PeerList = append(PeerList, peer)
 	}
 }
 
-func RemovePeer(peer string) {
+func GetPeers() []Peer {
+	rw.RLock()
+	defer rw.RUnlock()
+	peer := PeerList[:]
+	return peer
+}
+
+func setActive(peer Peer) {
 	rw.Lock()
 	defer rw.Unlock()
-	for idx, addr := range PeerList { // coord can also be removed, as it will send its new addr when it re-start
-		if addr == peer {
-			PeerList = append(PeerList[:idx], PeerList[idx+1:]...)
-			Verbose("peer (" + peer + ") is detected as failed and is removed.")
+	i := 0
+	for ; i < len(PeerList); i++ {
+		if PeerList[i].GossipAddr == peer.GossipAddr {
+			if !PeerList[i].Active {
+				PeerList[i].Active = true
+				Verbose("peer <" + peer.Identifier + "> at " + peer.GossipAddr + " is now active")
+			}
+			break
+		}
+	}
+	// if the peer is new, add to peer list
+	if i == len(PeerList) {
+		peer.Active = true
+		PeerList = append(PeerList, peer)
+		Verbose("discover a new peer <" + peer.Identifier + "> at " + peer.GossipAddr)
+	}
+}
+
+func setInactive(peer Peer) {
+	rw.Lock()
+	defer rw.Unlock()
+	for i, _ := range PeerList {
+		if PeerList[i].GossipAddr == peer.GossipAddr {
+			if PeerList[i].Active {
+				PeerList[i].Active = false
+				Verbose("peer <" + peer.Identifier + "> at " + peer.GossipAddr + " is now inactive")
+			}
 			break
 		}
 	}
@@ -180,6 +255,9 @@ func NewUpdate(prefix string, hash []byte, data []byte) Update {
 }
 
 func (handler *RPCHandler) Push(args PushArgs, reply *PushReply) error {
+	// mark sender as active
+	setActive(args.From)
+
 	// check missing updates
 	var missing []string
 	rw.RLock()
@@ -198,7 +276,11 @@ func (handler *RPCHandler) Push(args PushArgs, reply *PushReply) error {
 			UpdateMap[args.Update.ID] = args.Update
 			UpdateLog = append(UpdateLog, args.Update.ID)
 			Verbose("update #" + args.Update.ID + " merged")
-			QueryChan <- args.Update
+			if strings.HasPrefix(args.Update.ID, NodeIDPrefix) {
+				addPeer(DecodeToPeer(args.Update.Data))
+			} else {
+				QueryChan <- args.Update
+			}
 			// further, push the update to peers
 			PendingPushQueue <- PendingPush{
 				Update:    args.Update,
@@ -217,6 +299,9 @@ func (handler *RPCHandler) Push(args PushArgs, reply *PushReply) error {
 }
 
 func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) error {
+	// mark sender as active
+	setActive(args.From)
+
 	// 1. Push
 	// check missing updates
 	var missing []string
@@ -236,7 +321,11 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 			UpdateMap[args.Update.ID] = args.Update
 			UpdateLog = append(UpdateLog, args.Update.ID)
 			Verbose("update #" + args.Update.ID + " merged")
-			QueryChan <- args.Update
+			if strings.HasPrefix(args.Update.ID, NodeIDPrefix) {
+				addPeer(DecodeToPeer(args.Update.Data))
+			} else {
+				QueryChan <- args.Update
+			}
 			// further, push the update to peers
 			PendingPushQueue <- PendingPush{
 				Update:    args.Update,
@@ -269,6 +358,9 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 }
 
 func (handler *RPCHandler) Pull(args PullArgs, reply *PullReply) error {
+	// mark sender as active
+	setActive(args.From)
+
 	// check what updates peer is missing
 	rw.RLock()
 	localLog := UpdateLog[:]
@@ -297,7 +389,11 @@ func (handler *RPCHandler) Retransmit(args RetransmitArgs, reply *RetransmitRepl
 			UpdateMap[update.ID] = update
 			UpdateLog = append(UpdateLog, update.ID)
 			Verbose("update #" + update.ID + " merged")
-			QueryChan <- update
+			if strings.HasPrefix(update.ID, NodeIDPrefix) {
+				addPeer(DecodeToPeer(update.Data))
+			} else {
+				QueryChan <- update
+			}
 		}
 	}
 	return nil
@@ -338,31 +434,33 @@ func PushService() {
 			selectedPeers := SelectPeers()
 
 			// push to peers
-			for _, peer := range selectedPeers {
-				go func(peerAddr string) {
-					conn, err := rpc.Dial("tcp", peerAddr)
+			for _, p := range selectedPeers {
+				go func(peer Peer) {
+					conn, err := rpc.Dial("tcp", peer.GossipAddr)
 					if err != nil || conn == nil {
-						// peer failed. remove peer
-						RemovePeer(peerAddr)
+						// peer failed. mark inactive
+						setInactive(peer)
 						return
 					}
-					Verbose("pushing... (#" + pendingPush.Update.ID + ", " + peerAddr + ")")
+					Verbose("pushing... (#" + pendingPush.Update.ID + ", " + peer.GossipAddr + ")")
 					if mode == "Push" {
 						args := PushArgs{
-							Identity:  identity,
+							From:      Identity,
 							Update:    pendingPush.Update,
 							UpdateLog: pendingPush.UpdateLog,
 						}
 						reply := PushReply{}
 						err = conn.Call("RPCHandler.Push", args, &reply)
 						if err != nil {
-							// peer failed. remove peer
-							RemovePeer(peerAddr)
+							// peer failed. mark inactive
+							setInactive(peer)
 							return
+						} else {
+							setActive(peer)
 						}
 						// check if peer request retransmit
 						if len(reply.MissingUpdates) > 0 {
-							args := RetransmitArgs{Identity: identity}
+							args := RetransmitArgs{}
 							rw.RLock()
 							for _, id := range reply.MissingUpdates {
 								args.Updates = append(args.Updates, UpdateMap[id])
@@ -374,16 +472,18 @@ func PushService() {
 					} else if mode == "PushPull" {
 						time.Sleep(time.Duration(rand.New(rand.NewSource(time.Now().UnixNano())).Intn(2500)) * time.Millisecond)
 						args := PushPullArgs{
-							Identity:  identity,
+							From:      Identity,
 							Update:    pendingPush.Update,
 							UpdateLog: pendingPush.UpdateLog,
 						}
 						reply := PushPullReply{}
 						err = conn.Call("RPCHandler.PushPull", args, &reply)
 						if err != nil {
-							// peer failed. remove peer
-							RemovePeer(peerAddr)
+							// peer failed. mark inactive
+							setInactive(peer)
 							return
+						} else {
+							setActive(peer)
 						}
 						// add pulled updates first
 						rw.Lock()
@@ -392,13 +492,17 @@ func PushService() {
 								UpdateMap[update.ID] = update
 								UpdateLog = append(UpdateLog, update.ID)
 								Verbose("update #" + update.ID + " merged")
-								QueryChan <- update
+								if strings.HasPrefix(update.ID, NodeIDPrefix) {
+									addPeer(DecodeToPeer(update.Data))
+								} else {
+									QueryChan <- update
+								}
 							}
 						}
 						rw.Unlock()
 						// then retransmit if requested
 						if len(reply.MissingUpdates) > 0 {
-							args := RetransmitArgs{Identity: identity}
+							args := RetransmitArgs{}
 							rw.RLock()
 							for _, id := range reply.MissingUpdates {
 								args.Updates = append(args.Updates, UpdateMap[id])
@@ -408,7 +512,7 @@ func PushService() {
 							_ = conn.Call("RPCHandler.Retransmit", args, &reply)
 						}
 					}
-				}(peer)
+				}(p)
 			}
 		}
 	}
@@ -428,28 +532,31 @@ func PullService() {
 			selectedPeers := SelectPeers()
 
 			// pull from peers
-			for _, peer := range selectedPeers {
-				go func(peerAddr string) {
-					conn, err := rpc.Dial("tcp", peerAddr)
+			for _, p := range selectedPeers {
+				go func(peer Peer) {
+					conn, err := rpc.Dial("tcp", peer.GossipAddr)
 					if err != nil || conn == nil {
-						Verbose("pull failed (" + peerAddr + ")")
+						Verbose("pull failed (" + peer.GossipAddr + ")")
 						replyChan <- []Update{}
+						setInactive(peer)
 						return
 					}
-					Verbose("pulling... (" + peerAddr + ")")
+					Verbose("pulling... (" + peer.GossipAddr + ")")
 					rw.RLock()
-					args := PullArgs{Identity: identity, UpdateLog: UpdateLog[:]}
+					args := PullArgs{From: Identity, UpdateLog: UpdateLog[:]}
 					rw.RUnlock()
 					reply := PullReply{}
 					err = conn.Call("RPCHandler.Pull", args, &reply)
 					if err != nil {
-						Verbose("pull failed (" + peerAddr + ")")
+						Verbose("pull failed (" + peer.GossipAddr + ")")
 						replyChan <- []Update{}
+						setInactive(peer)
 					} else {
-						Verbose("pull succeeded (" + peerAddr + ")")
+						Verbose("pull succeeded (" + peer.GossipAddr + ")")
 						replyChan <- reply.Updates
+						setActive(peer)
 					}
-				}(peer)
+				}(p)
 			}
 
 			// process replies
@@ -464,7 +571,11 @@ func PullService() {
 						UpdateMap[update.ID] = update
 						UpdateLog = append(UpdateLog, update.ID)
 						Verbose("update #" + update.ID + " merged")
-						QueryChan <- update
+						if strings.HasPrefix(update.ID, NodeIDPrefix) {
+							addPeer(DecodeToPeer(update.Data))
+						} else {
+							QueryChan <- update
+						}
 					}
 				}
 				rw.Unlock()
@@ -474,21 +585,27 @@ func PullService() {
 	}
 }
 
-func SelectPeers() []string {
+func SelectPeers() []Peer {
 	rw.RLock()
 	peers := PeerList[:]
 	rw.RUnlock()
-	var selectedPeers []string
-	if len(peers) == 0 {
+	var activePeers []Peer
+	for i, peer := range peers {
+		if peer.Active {
+			activePeers = append(activePeers, peers[i])
+		}
+	}
+	var selectedPeers []Peer
+	if len(activePeers) == 0 {
 		Verbose("no available peers")
-	} else if len(peers) <= int(FanOut) {
-		selectedPeers = peers
+	} else if len(activePeers) <= int(FanOut) {
+		selectedPeers = activePeers
 	} else {
 		rand.Seed(time.Now().UnixNano())
-		rand.Shuffle(len(peers), func(i, j int) {
-			peers[i], peers[j] = peers[j], peers[i]
+		rand.Shuffle(len(activePeers), func(i, j int) {
+			activePeers[i], activePeers[j] = activePeers[j], activePeers[i]
 		})
-		selectedPeers = peers[:FanOut]
+		selectedPeers = activePeers[:FanOut]
 	}
 	return selectedPeers
 }
