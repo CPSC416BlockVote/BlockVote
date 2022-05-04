@@ -9,11 +9,12 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
-	"github.com/DistributedClocks/tracing"
 	"log"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -34,14 +35,20 @@ type CoordConfig struct {
 // messages
 
 type (
-	DownloadArgs struct {
+	GetPeersArgs struct {
 	}
-	DownloadReply struct {
-		BlockChain [][]byte
+
+	GetPeersReply struct {
+		Peers []gossip.Peer
+	}
+
+	GetInitialStatesArgs struct {
+	}
+
+	GetInitialStatesReply struct {
+		Blockchain [][]byte
 		LastHash   []byte
 		Candidates [][]byte
-		MemoryPool TxnPool
-		Peers      []gossip.Peer
 	}
 
 	GetCandidatesArgs struct {
@@ -57,21 +64,6 @@ type (
 	GetEntryPointsReply struct {
 		MinerAddrList []string
 	}
-
-	QueryTxnArgs struct {
-		TxID []byte
-	}
-
-	QueryTxnReply struct {
-		NumConfirmed int
-	}
-
-	QueryResultsArgs struct {
-	}
-
-	QueryResultsReply struct {
-		Votes []uint
-	}
 )
 
 type Coord struct {
@@ -79,11 +71,6 @@ type Coord struct {
 	Storage    *util.Database
 	Blockchain *blockchain.BlockChain
 	Candidates []*Identity.Wallets
-
-	EntryPointIpPort string
-
-	GossipAddr string
-	UpdateChan chan<- gossip.Update
 }
 
 func NewCoord() *Coord {
@@ -92,7 +79,7 @@ func NewCoord() *Coord {
 	}
 }
 
-func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCandidates uint8, ctrace *tracing.Tracer) error {
+func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCandidates uint8) error {
 	// 1. Initialization
 	// 1.1 Storage(DB)
 	resume := c.InitStorage()
@@ -108,38 +95,26 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	// 2. Starting API services
 	coordIp := minerAPIListenAddr[0:strings.Index(minerAPIListenAddr, ":")]
 
-	// >> entry point
-	entryPointAPI := new(EntryPointAPI)
-	entryPointAPI.e = c
-	entryPointListenAddr, err := util.NewRPCServerWithIp(entryPointAPI, coordIp)
-	if err != nil {
-		return errors.New("cannot start entry point API service")
-	}
-	c.EntryPointIpPort = entryPointListenAddr
-	log.Println("[INFO] Listen to clients' API requests at", c.EntryPointIpPort)
-
 	// gossip
-	var existingUpdates []gossip.Update
-	blockchainData, _ := c.Blockchain.Encode()
-	for _, data := range blockchainData {
-		existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.BlockIDPrefix, blockchain.DecodeToBlock(data).Hash, data))
-	}
-	queryChan, updateChan, gossipAddr, err := gossip.Start(2,
+	//var existingUpdates []gossip.Update
+	//blockchainData, _ := c.Blockchain.Encode()
+	//for _, data := range blockchainData {
+	//	existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.BlockIDPrefix, blockchain.DecodeToBlock(data).Hash, data))
+	//}
+	_, _, _, err := gossip.Start(2,
 		"Pull",
 		coordIp,
-		[]gossip.Peer{},
-		existingUpdates,
+		nil,
+		nil,
 		gossip.Peer{
 			Identifier: "coord",
-			APIAddr:    c.EntryPointIpPort,
 			Active:     true,
+			Type:       gossip.TypeTracker,
 		},
 		true)
 	if err != nil {
 		return err
 	}
-	c.GossipAddr = gossipAddr
-	c.UpdateChan = updateChan
 	// 1.4 NodeList
 	c.InitNodeList(resume)
 
@@ -161,44 +136,11 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	}
 	log.Println("[INFO] Listen to clients' API requests at", clientAPIListenAddr)
 
-	// 3. receive blocks from miners
-	for {
-		data := <-queryChan
-		// check if it is a block
-		if strings.HasPrefix(data.ID, gossip.BlockIDPrefix) {
-			block := blockchain.DecodeToBlock(data.Data)
-			// check if it is an unseen block
-			if !c.Blockchain.Exist(block.Hash) {
-				// try to put it to the blockchain
-				prevLastHash := c.Blockchain.GetLastHash()
-				success, switched, _ := c.Blockchain.Put(*block, false)
-				curLastHash := c.Blockchain.GetLastHash()
-				if success {
-					log.Printf("[INFO] Received valid block #%d (%x) by %s\n", block.BlockNum, block.Hash[:5], block.MinerID)
-					blockchain.PrintBlock(block)
-					if switched == nil {
-						if bytes.Compare(prevLastHash, curLastHash) != 0 {
-							log.Println("[INFO] Added new block to the current chain")
-						} else {
-							log.Println("[INFO] Added new block to an alternative chain")
-						}
-					} else {
-						log.Println("[INFO] Added new block to an alternative chain")
-						log.Println("[INFO] Switching to a new chain")
-					}
-
-				} else {
-					log.Printf("[WARN] Rejected invalid block #%d (%x) by %s\n", block.BlockNum, block.Hash[:5], block.MinerID)
-				}
-			}
-		}
-	}
-
 	// Wait for interrupt signal to exit
-	//sigs := make(chan os.Signal, 1)
-	//signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	//<-sigs
-	//return nil
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	<-sigs
+	return nil
 }
 
 func (c *Coord) InitStorage() (resume bool) {
@@ -218,13 +160,8 @@ func (c *Coord) InitStorage() (resume bool) {
 
 func (c *Coord) InitBlockchain(resume bool) {
 	c.Blockchain = blockchain.NewBlockChain(c.Storage, c.Candidates)
-	if !resume {
-		err := c.Blockchain.Init()
-		util.CheckErr(err, "[ERROR] error when initializing blockchain")
-	} else {
-		err := c.Blockchain.ResumeFromDB()
-		util.CheckErr(err, "[ERROR] error when reloading blockchain")
-	}
+	err := c.Blockchain.Init()
+	util.CheckErr(err, "[ERROR] error when initializing blockchain")
 }
 
 func (c *Coord) InitCandidates(nCandidates uint8, resume bool) {
@@ -301,20 +238,24 @@ type CoordAPIMiner struct {
 	c *Coord
 }
 
-// Download provides necessary data about the system for new node. should be called before Register
-func (api *CoordAPIMiner) Download(args DownloadArgs, reply *DownloadReply) error {
-	// prepare reply data
+// GetPeers provides peer information
+func (api *CoordAPIMiner) GetPeers(args GetPeersArgs, reply *GetPeersReply) error {
+	*reply = GetPeersReply{
+		Peers: append(gossip.GetPeers(), gossip.Identity),
+	}
+	return nil
+}
+
+func (api *CoordAPIMiner) GetInitialStates(args GetInitialStatesArgs, reply *GetInitialStatesReply) error {
 	encodedBlockchain, lastHash := api.c.Blockchain.Encode()
 	var candidates [][]byte
 	for _, cand := range api.c.Candidates {
 		candidates = append(candidates, cand.Encode())
 	}
-
-	*reply = DownloadReply{
-		BlockChain: encodedBlockchain,
+	*reply = GetInitialStatesReply{
+		Blockchain: encodedBlockchain,
 		LastHash:   lastHash,
 		Candidates: candidates,
-		Peers:      append(gossip.GetPeers(), gossip.Identity),
 	}
 	return nil
 }
@@ -335,26 +276,28 @@ func (api *CoordAPIClient) GetCandidates(args GetCandidatesArgs, reply *GetCandi
 }
 
 func (api *CoordAPIClient) GetEntryPoints(args GetEntryPointsArgs, reply *GetEntryPointsReply) error {
-	// access points consist of api listeners of coord and all miners
-	accessPoints := []string{api.c.EntryPointIpPort}
-	for _, miner := range gossip.GetPeers() {
-		accessPoints = append(accessPoints, miner.APIAddr)
+	// access points consist of api listeners of all miners
+	var accessPoints []string
+	for _, node := range gossip.GetPeers() {
+		if node.Type == "miner" && node.Active {
+			accessPoints = append(accessPoints, node.APIAddr)
+		}
 	}
 
 	*reply = GetEntryPointsReply{MinerAddrList: accessPoints}
 	return nil
 }
 
-func (c *Coord) ReceiveTxn(txn *blockchain.Transaction) {
-	// broadcast
-	c.UpdateChan <- gossip.NewUpdate(gossip.TransactionIDPrefix, txn.ID, txn.Serialize())
-}
-
-func (c *Coord) CheckTxn(txID []byte) int {
-	return c.Blockchain.TxnStatus(txID)
-}
-
-func (c *Coord) CheckResults() []uint {
-	votes, _ := c.Blockchain.VotingStatus()
-	return votes
-}
+//func (c *Coord) ReceiveTxn(txn *blockchain.Transaction) {
+//	// broadcast
+//	c.UpdateChan <- gossip.NewUpdate(gossip.TransactionIDPrefix, txn.ID, txn.Serialize())
+//}
+//
+//func (c *Coord) CheckTxn(txID []byte) int {
+//	return c.Blockchain.TxnStatus(txID)
+//}
+//
+//func (c *Coord) CheckResults() []uint {
+//	votes, _ := c.Blockchain.VotingStatus()
+//	return votes
+//}

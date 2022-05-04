@@ -18,6 +18,8 @@ const (
 	BlockIDPrefix       = "block-"
 	TransactionIDPrefix = "txn-"
 	NodeIDPrefix        = "node-"
+	TypeTracker         = "tracker"
+	TypeMiner           = "miner"
 )
 
 type Update struct {
@@ -30,6 +32,7 @@ type Peer struct {
 	GossipAddr string
 	APIAddr    string
 	Active     bool
+	Type       string // "tracker" or "miner"
 }
 
 func (p *Peer) Encode() []byte {
@@ -142,6 +145,9 @@ func Start(fanOut uint8, // number of connections
 	ExitSignal = make(chan int, 2)
 
 	// unpack initial updates
+	for _, p := range peers {
+		initialUpdates = append(initialUpdates, NewUpdate(NodeIDPrefix, []byte(p.Identifier), p.Encode()))
+	}
 	for _, update := range initialUpdates {
 		UpdateMap[update.ID] = update
 		UpdateLog = append(UpdateLog, update.ID)
@@ -154,9 +160,20 @@ func Start(fanOut uint8, // number of connections
 	}
 	Verbose("listen to gossips at " + localListenAddr)
 	Identity.GossipAddr = localListenAddr
+
+	if Identity.Type == TypeMiner {
+		// push its info to peers
+		uCh <- NewUpdate(NodeIDPrefix, []byte(Identity.Identifier), Identity.Encode())
+	} else if Identity.Type == TypeTracker {
+		if operatingMode != "Pull" {
+			err = errors.New("[Error] tracker node can only operate on Pull")
+			return
+		}
+	} else {
+		err = errors.New("[Error] unexpected node type")
+		return
+	}
 	setPeers(peers) // set peers should be called only after local address is assigned
-	// push its info to peers
-	uCh <- NewUpdate(NodeIDPrefix, []byte(Identity.Identifier), Identity.Encode())
 
 	go DigestLocalUpdateService()
 
@@ -229,7 +246,7 @@ func setActive(peer Peer) {
 	if i == len(PeerList) {
 		peer.Active = true
 		PeerList = append(PeerList, peer)
-		Verbose("discover a new peer <" + peer.Identifier + "> at " + peer.GossipAddr)
+		Verbose("discover a new peer <" + peer.Identifier + "> [" + peer.Type + "] at " + peer.GossipAddr)
 	}
 }
 
@@ -263,6 +280,9 @@ func (handler *RPCHandler) Push(args PushArgs, reply *PushReply) error {
 	rw.RLock()
 	for _, id := range args.UpdateLog {
 		if len(UpdateMap[id].ID) == 0 && id != args.Update.ID {
+			if Identity.Type == TypeTracker && !strings.Contains(id, NodeIDPrefix) {
+				continue
+			}
 			// never see this update, and update is not the latest one
 			missing = append(missing, id)
 		}
@@ -270,26 +290,28 @@ func (handler *RPCHandler) Push(args PushArgs, reply *PushReply) error {
 	rw.RUnlock()
 
 	// only accept the update if no earlier updates are missing
-	if len(missing) == 0 {
-		rw.Lock()
-		if len(UpdateMap[args.Update.ID].ID) == 0 {
-			UpdateMap[args.Update.ID] = args.Update
-			UpdateLog = append(UpdateLog, args.Update.ID)
-			Verbose("update #" + args.Update.ID + " merged")
-			if strings.HasPrefix(args.Update.ID, NodeIDPrefix) {
-				addPeer(DecodeToPeer(args.Update.Data))
-			} else {
-				QueryChan <- args.Update
+	if Identity.Type == TypeMiner || Identity.Type == TypeTracker && strings.Contains(args.Update.ID, NodeIDPrefix) {
+		if len(missing) == 0 {
+			rw.Lock()
+			if len(UpdateMap[args.Update.ID].ID) == 0 {
+				UpdateMap[args.Update.ID] = args.Update
+				UpdateLog = append(UpdateLog, args.Update.ID)
+				Verbose("update #" + args.Update.ID + " merged")
+				if strings.HasPrefix(args.Update.ID, NodeIDPrefix) {
+					addPeer(DecodeToPeer(args.Update.Data))
+				} else {
+					QueryChan <- args.Update
+				}
+				// further, push the update to peers
+				PendingPushQueue <- PendingPush{
+					Update:    args.Update,
+					UpdateLog: UpdateLog,
+				}
 			}
-			// further, push the update to peers
-			PendingPushQueue <- PendingPush{
-				Update:    args.Update,
-				UpdateLog: UpdateLog,
-			}
+			rw.Unlock()
+		} else {
+			missing = append(missing, args.Update.ID)
 		}
-		rw.Unlock()
-	} else {
-		missing = append(missing, args.Update.ID)
 	}
 
 	// return missing update ids to request for retransmit
@@ -308,6 +330,9 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 	rw.RLock()
 	for _, id := range args.UpdateLog {
 		if len(UpdateMap[id].ID) == 0 && id != args.Update.ID {
+			if Identity.Type == TypeTracker && !strings.Contains(id, NodeIDPrefix) {
+				continue
+			}
 			// never see this update, and update is not the latest one
 			missing = append(missing, id)
 		}
@@ -315,29 +340,35 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 	rw.RUnlock()
 
 	// only accept the update if no earlier updates are missing
-	if len(missing) == 0 {
-		rw.Lock()
-		if len(UpdateMap[args.Update.ID].ID) == 0 {
-			UpdateMap[args.Update.ID] = args.Update
-			UpdateLog = append(UpdateLog, args.Update.ID)
-			Verbose("update #" + args.Update.ID + " merged")
-			if strings.HasPrefix(args.Update.ID, NodeIDPrefix) {
-				addPeer(DecodeToPeer(args.Update.Data))
-			} else {
-				QueryChan <- args.Update
+	if Identity.Type == TypeMiner || Identity.Type == TypeTracker && strings.Contains(args.Update.ID, NodeIDPrefix) {
+		if len(missing) == 0 {
+			rw.Lock()
+			if len(UpdateMap[args.Update.ID].ID) == 0 {
+				UpdateMap[args.Update.ID] = args.Update
+				UpdateLog = append(UpdateLog, args.Update.ID)
+				Verbose("update #" + args.Update.ID + " merged")
+				if strings.HasPrefix(args.Update.ID, NodeIDPrefix) {
+					addPeer(DecodeToPeer(args.Update.Data))
+				} else {
+					QueryChan <- args.Update
+				}
+				// further, push the update to peers
+				PendingPushQueue <- PendingPush{
+					Update:    args.Update,
+					UpdateLog: UpdateLog,
+				}
 			}
-			// further, push the update to peers
-			PendingPushQueue <- PendingPush{
-				Update:    args.Update,
-				UpdateLog: UpdateLog,
-			}
+			rw.Unlock()
+		} else {
+			missing = append(missing, args.Update.ID)
 		}
-		rw.Unlock()
-	} else {
-		missing = append(missing, args.Update.ID)
 	}
 
+	*reply = PushPullReply{MissingUpdates: missing}
 	// 2. Pull
+	if Identity.Type == TypeTracker {
+		return nil
+	}
 	// check what updates peer is missing
 	rw.RLock()
 	localLog := UpdateLog[:]
@@ -348,7 +379,6 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 	}
 
 	// request missing updates, and retransmit updates to peer
-	*reply = PushPullReply{MissingUpdates: missing}
 	for _, id := range localLog {
 		if !peerMap[id] {
 			reply.Updates = append(reply.Updates, UpdateMap[id])
@@ -373,7 +403,7 @@ func (handler *RPCHandler) Pull(args PullArgs, reply *PullReply) error {
 	// retransmit missing updates to peer
 	*reply = PullReply{}
 	for _, id := range localLog {
-		if !peerMap[id] {
+		if !peerMap[id] && (args.From.Type == TypeMiner || args.From.Type == TypeTracker && strings.Contains(id, NodeIDPrefix)) {
 			reply.Updates = append(reply.Updates, UpdateMap[id])
 		}
 	}
@@ -430,8 +460,8 @@ func PushService() {
 			return
 		case pendingPush := <-PendingPushQueue:
 			Verbose("new push cycle (#" + pendingPush.Update.ID + ")")
-			// randomly select peers
-			selectedPeers := SelectPeers()
+			// randomly select peers (select tracker nodes only if it is a node update)
+			selectedPeers := SelectPeers(strings.Contains(pendingPush.Update.ID, NodeIDPrefix))
 
 			// push to peers
 			for _, p := range selectedPeers {
@@ -529,7 +559,7 @@ func PullService() {
 		default:
 			Verbose("new pull cycle")
 			// randomly select peers
-			selectedPeers := SelectPeers()
+			selectedPeers := SelectPeers(true)
 
 			// pull from peers
 			for _, p := range selectedPeers {
@@ -585,13 +615,13 @@ func PullService() {
 	}
 }
 
-func SelectPeers() []Peer {
+func SelectPeers(includeTracker bool) []Peer {
 	rw.RLock()
 	peers := PeerList[:]
 	rw.RUnlock()
 	var activePeers []Peer
 	for i, peer := range peers {
-		if peer.Active {
+		if peer.Active && (includeTracker || !includeTracker && peer.Type == TypeMiner) {
 			activePeers = append(activePeers, peers[i])
 		}
 	}

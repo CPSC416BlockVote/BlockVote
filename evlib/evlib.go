@@ -156,20 +156,18 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort strin
 			for idx, txnInfo := range allTxns {
 				if !txnInfo.confirmed && time.Now().Sub(txnInfo.submitTime) > thread {
 					// start query status
-					var queryTxnReply *blockvote.QueryTxnReply
+					var submitTxnReply *blockvote.SubmitTxnReply
 					conn := d.connectMiner()
-					err = conn.Call("EntryPointAPI.QueryTxn", blockvote.QueryTxnArgs{
-						TxID: txnInfo.txn.ID,
-					}, &queryTxnReply)
+					err = conn.Call("EntryPointAPI.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txnInfo.txn}, &submitTxnReply)
 					_ = conn.Close()
 					if err == nil {
-						if queryTxnReply.NumConfirmed > -1 {
+						if submitTxnReply.Exist {
 							d.rw.Lock()
 							d.TxnInfos[idx].confirmed = true // we can do this b.c. TxnInfos is append only
 							d.rw.Unlock()
 						} else {
 							//log.Printf("[INFO] Resubmitting %x", txnInfo.txn.ID)
-							d.submitTxn(txnInfo.txn)
+							//d.submitTxn(txnInfo.txn)
 							d.rw.Lock()
 							d.TxnInfos[idx].submitTime = time.Now() // we can do this b.c. TxnInfos is append only
 							d.rw.Unlock()

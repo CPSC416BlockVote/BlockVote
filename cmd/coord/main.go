@@ -5,8 +5,6 @@ import (
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"flag"
 	"os"
-	"os/signal"
-	"syscall"
 )
 
 func main() {
@@ -21,14 +19,6 @@ func main() {
 		}
 	}
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
 	coord := blockvote.NewCoord()
-	go func() {
-		<-sigs
-		coord.PrintChain()
-		os.Exit(0)
-	}()
-	coord.Start(config.ClientAPIListenAddr, config.MinerAPIListenAddr, config.NCandidates, nil)
+	coord.Start(config.ClientAPIListenAddr, config.MinerAPIListenAddr, config.NCandidates)
 }
