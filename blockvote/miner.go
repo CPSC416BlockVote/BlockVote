@@ -318,6 +318,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	go m.TxnService()
 	go m.BlockService()
 	go m.MiningService()
+	go m.DigestUpdates()
 
 	log.Printf("[INFO] %s joined successfully\n", minerId)
 
@@ -325,10 +326,18 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	m.cond.Broadcast()
 	m.mu.Unlock()
 
+	for {
+		m.PrintChain()
+		time.Sleep(time.Minute)
+	}
+	return nil
+}
+
+func (m *Miner) DigestUpdates() {
 	// receive update from peers and notify respective service
 	for {
 		select {
-		case update := <-queryChan:
+		case update := <-m.queryChan:
 			if strings.Contains(update.ID, gossip.BlockIDPrefix) {
 				m.BlockRecvChan <- blockchain.DecodeToBlock(update.Data)
 			} else if strings.Contains(update.ID, gossip.TransactionIDPrefix) {
@@ -337,7 +346,6 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 			}
 		}
 	}
-	return nil
 }
 
 func (m *Miner) TxnService() {

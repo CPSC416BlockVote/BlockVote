@@ -6,17 +6,20 @@ def main():
     parser = argparse.ArgumentParser(description='P2 Checker Script')
     parser.add_argument('-n', type=int, default=1,
                         help='number of clients in the system')
+    parser.add_argument('-id', type=str, default="miner1",
+                        help='id of one of the remaining miners in the system')
     args = parser.parse_args()
 
     num_clients = args.n
+    miner_id = args.id
 
     # load committed txns
-    committed_txns = np.genfromtxt("./txns.txt", delimiter=",", dtype='str')
+    committed_txns = np.genfromtxt(f"./{miner_id}txns.txt", delimiter=",", dtype='str')
     if committed_txns.ndim == 1:
         committed_txns = committed_txns[np.newaxis, :]
 
     # load votes
-    votes = np.genfromtxt("./votes.txt", delimiter=",", dtype='str')
+    votes = np.genfromtxt(f"./{miner_id}votes.txt", delimiter=",", dtype='str')
 
     # load valid txns
     valid_txns = []

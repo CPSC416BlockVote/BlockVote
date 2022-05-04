@@ -6,8 +6,6 @@ import (
 	"flag"
 	"log"
 	"os"
-	"os/signal"
-	"syscall"
 )
 
 func main() {
@@ -29,14 +27,6 @@ func main() {
 		log.SetOutput(f)
 	}
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
 	miner := blockvote.NewMiner()
-	go func() {
-		<-sigs
-		miner.PrintChain()
-		os.Exit(0)
-	}()
 	miner.Start(config.MinerId, config.CoordAddr, config.MinerAddr, config.MaxTxn)
 }
