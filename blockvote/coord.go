@@ -1,20 +1,17 @@
 package blockvote
 
 import (
-	"bytes"
 	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
-	"encoding/gob"
 	"errors"
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
+	"time"
 )
 
 const (
@@ -91,6 +88,8 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	c.InitCandidates(nCandidates, resume)
 	// 1.3 Blockchain
 	c.InitBlockchain(resume)
+	// 1.4 NodeList
+	peers := c.InitNodeList(resume)
 
 	// 2. Starting API services
 	coordIp := minerAPIListenAddr[0:strings.Index(minerAPIListenAddr, ":")]
@@ -104,7 +103,7 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	_, _, _, err := gossip.Start(2,
 		"Pull",
 		coordIp,
-		nil,
+		peers,
 		nil,
 		gossip.Peer{
 			Identifier: "coord",
@@ -115,8 +114,6 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	if err != nil {
 		return err
 	}
-	// 1.4 NodeList
-	c.InitNodeList(resume)
 
 	// >> miner
 	coordAPIMiner := new(CoordAPIMiner)
@@ -136,11 +133,22 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	}
 	log.Println("[INFO] Listen to clients' API requests at", clientAPIListenAddr)
 
+	// make node list persistent on disk
+	for {
+		time.Sleep(5 * time.Second)
+		nodeList := gossip.GetPeers()
+		for _, node := range nodeList {
+			if node.Type == gossip.TypeMiner {
+				c.Storage.Put(util.DBKeyWithPrefix(NodeKeyPrefix, []byte(node.Identifier)), node.Encode())
+			}
+		}
+	}
+
 	// Wait for interrupt signal to exit
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	<-sigs
-	return nil
+	//sigs := make(chan os.Signal, 1)
+	//signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	//<-sigs
+	//return nil
 }
 
 func (c *Coord) InitStorage() (resume bool) {
@@ -160,8 +168,13 @@ func (c *Coord) InitStorage() (resume bool) {
 
 func (c *Coord) InitBlockchain(resume bool) {
 	c.Blockchain = blockchain.NewBlockChain(c.Storage, c.Candidates)
-	err := c.Blockchain.Init()
-	util.CheckErr(err, "[ERROR] error when initializing blockchain")
+	if !resume {
+		err := c.Blockchain.Init()
+		util.CheckErr(err, "[ERROR] error when initializing blockchain")
+	} else {
+		err := c.Blockchain.ResumeFromDB()
+		util.CheckErr(err, "[ERROR] error when reloading blockchain")
+	}
 }
 
 func (c *Coord) InitCandidates(nCandidates uint8, resume bool) {
@@ -194,23 +207,16 @@ func (c *Coord) InitCandidates(nCandidates uint8, resume bool) {
 	}
 }
 
-func (c *Coord) InitNodeList(resume bool) {
+func (c *Coord) InitNodeList(resume bool) (nodeList []gossip.Peer) {
 	if resume {
 		values, err := c.Storage.GetAllWithPrefix(NodeKeyPrefix)
 		util.CheckErr(err, "[ERROR] error reloading node list")
 		for _, val := range values {
-			node := NodeInfo{}
-			err := gob.NewDecoder(bytes.NewReader(val)).Decode(&node)
-			if err != nil {
-				log.Println("[ERROR] unable to decode node info")
-				log.Fatal(err)
-			}
-			// reconstruct node list
-			//c.NodeList = append(c.NodeList, node)
+			node := gossip.DecodeToPeer(val)
+			nodeList = append(nodeList, node)
 		}
-		// notify miners of gossip peers (b.c. gossip addr at coord changes)
-		//c.NotifyMiners()
 	}
+	return
 }
 
 func (c *Coord) PrintChain() {
