@@ -101,7 +101,8 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	//	existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.BlockIDPrefix, blockchain.DecodeToBlock(data).Hash, data))
 	//}
 	_, _, _, err := gossip.Start(2,
-		"Pull",
+		"PushPull",
+		gossip.TriggerInterval,
 		coordIp,
 		peers,
 		nil,

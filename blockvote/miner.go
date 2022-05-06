@@ -296,6 +296,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	queryChan, updateChan, gossipAddr, err := gossip.Start(
 		2,
 		"PushPull",
+		gossip.TriggerNewUpdate,
 		minerIP,
 		reply.Peers,
 		existingUpdates,
