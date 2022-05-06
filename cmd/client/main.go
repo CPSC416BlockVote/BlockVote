@@ -11,9 +11,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
-	"os/signal"
 	"strconv"
-	"syscall"
 	"time"
 )
 
@@ -190,55 +188,5 @@ func main() {
 		log.Println("checking ", client.CandidateList[i], " : ", voters)
 	}
 
-	log.Println("All operations are completed. Sleeping...")
-
-	// Wait for interrupt signal to exit
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-	<-sigs
-
-	//// query which block has confirmed txn with txnID in the loop
-	//for voter, txn := range client.VoterTxnMap {
-	//	fmt.Println("voter:", voter, "=>", "txnInfo:", txn.ID)
-	//	numConfirmed, err := client.GetBallotStatus(txn.ID)
-	//	if err != nil {
-	//		log.Panic(err)
-	//	}
-	//	fmt.Println("num of Confirmed txn: ", numConfirmed)
-	//}
-	//
-	//time.Sleep(40 * time.Second)
-	//// query how many confirmed txn based on last txnID in the loop
-	//for i := 0; i < len(client.CandidateList); i++ {
-	//	voters, err := client.GetCandVotes(client.CandidateList[i])
-	//	if err != nil {
-	//		log.Panic(err)
-	//	}
-	//	fmt.Println("checking ", client.CandidateList[i], " : ", voters)
-	//}
-	//
-	//time.Sleep(60 * time.Second)
-	//// query how many confirmed txn based on last txnID in the loop
-	//for i := 0; i < len(client.CandidateList); i++ {
-	//	voters, err := client.GetCandVotes(client.CandidateList[i])
-	//	if err != nil {
-	//		log.Panic(err)
-	//	}
-	//	fmt.Println("checking ", client.CandidateList[i], " : ", voters)
-	//}
-	//
-	//time.Sleep(50 * time.Second)
-	//for i := 0; i < len(client.CandidateList); i++ {
-	//	voters, err := client.GetCandVotes(client.CandidateList[i])
-	//	if err != nil {
-	//		log.Panic(err)
-	//	}
-	//	fmt.Println("checking ", client.CandidateList[i], " : ", voters)
-	//}
-	//
-	//for voter, txnInfo := range client.VoterTxnInfoMap {
-	//	fmt.Println("voter:", voter, "=>", "txnInfo:", txnInfo)
-	//}
-
-	//client.Stop()
+	client.Stop()
 }

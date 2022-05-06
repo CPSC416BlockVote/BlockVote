@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/rpc"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -147,7 +148,6 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort strin
 
 	quit = make(chan bool)
 	go func() {
-		// call coord for list of active miners with length N_Receives
 		for {
 			d.rw.RLock()
 			allTxns := d.TxnInfos[:]
@@ -387,9 +387,27 @@ func (d *EV) GetCandVotes(candidate string) (uint, error) {
 // Stop Stops the EV instance.
 // This call always succeeds.
 func (d *EV) Stop() {
+	log.Println("[INFO] Stopping...")
+	for {
+		d.rw.RLock()
+		allTxns := d.TxnInfos[:]
+		d.rw.RUnlock()
+		// check unconfirmed transactions
+		count := 0
+		for _, txn := range allTxns {
+			if !txn.confirmed {
+				count++
+			}
+		}
+		if count == 0 {
+			break
+		}
+		log.Println("[INFO] Waiting for all transactions to be submitted... " +
+			"(" + strconv.Itoa(count) + "/" + strconv.Itoa(len(allTxns)) + " remaining)")
+		time.Sleep(5 * time.Second)
+	}
 	quit <- true
 	d.coordClient.Close()
-	//d.minerClient.Close()
 	return
 }
 
