@@ -295,16 +295,17 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	}
 	queryChan, updateChan, gossipAddr, err := gossip.Start(
 		2,
-		"PushPull",
+		gossip.OpModePushPull,
 		gossip.TriggerNewUpdate,
 		minerIP,
 		reply.Peers,
 		existingUpdates,
 		gossip.Peer{
-			Identifier: minerId,
-			APIAddr:    clientListenAddr,
-			Active:     true,
-			Type:       gossip.TypeMiner,
+			Identifier:   minerId,
+			APIAddr:      clientListenAddr,
+			Active:       true,
+			Type:         gossip.TypeMiner,
+			Subscription: gossip.SubscribeNode | gossip.SubscribeTxn | gossip.SubscribeBlock,
 		},
 		true)
 	if err != nil {
