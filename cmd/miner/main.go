@@ -26,6 +26,7 @@ func main() {
 		defer f.Close()
 		log.SetOutput(f)
 	}
-	server := blockvote.NewMiner()
-	server.Start(config.MinerId, config.CoordAddr, config.MinerAddr, config.Difficulty, config.MaxTxn, nil)
+
+	miner := blockvote.NewMiner()
+	miner.Start(config.MinerId, config.CoordAddr, config.MinerAddr, config.MaxTxn)
 }
