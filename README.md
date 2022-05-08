@@ -4,6 +4,19 @@ UBC CPSC 416 2021w2 Project
 
 Group members: Zhongze Chen, Eric Lyu, Mingyang Ye, Xinyi Ye, Yitong Zhao
 
+## Improvements
+
+- [ ] Decentralize coord 
+    - [x] Simplify coord's functionalities
+    - [ ] Distribute coord
+- [ ] Improve gossip protocol
+    - [x] Allow cycle to be triggered by both intervals and new updates
+    - [x] Allow nodes to subscribe to specific types of updates
+    - [ ] Truncate log and local cache
+- [ ] Allow miner rejoin (in progress)
+- [ ] Support multiple elections
+- [ ] Support dynamic difficulties
+
 ## Usage
 
 ### Coord
