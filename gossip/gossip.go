@@ -155,12 +155,15 @@ func Start(fanOut uint8, // number of connections
 	exitSignal = make(chan int, 2)
 
 	// unpack initial updates
-	for _, p := range peers {
-		initialUpdates = append(initialUpdates, NewUpdate(NodeIDPrefix, []byte(p.Identifier), p.Encode()))
-	}
 	for _, update := range initialUpdates {
 		updateMap[update.ID] = update
 		updateLog = append(updateLog, update.ID)
+	}
+	// append node updates after
+	for _, p := range peers {
+		peer := p          // make a copy
+		peer.Active = true // set to be active
+		initialUpdates = append(initialUpdates, NewUpdate(NodeIDPrefix, []byte(peer.Identifier), peer.Encode()))
 	}
 
 	handler := new(RPCHandler)
@@ -184,6 +187,8 @@ func Start(fanOut uint8, // number of connections
 		return
 	}
 	setPeers(peers) // set peers should be called only after local address is assigned
+
+	//TODO: default subscribes to SubscribeNode
 
 	if operatingMode == OpModePush {
 		go pushService(trigger)
@@ -279,12 +284,6 @@ func setInactive(peer Peer) {
 			break
 		}
 	}
-}
-
-func GetUpdateLog() []string {
-	rw.RLock()
-	defer rw.RUnlock()
-	return updateLog
 }
 
 func NewUpdate(prefix string, hash []byte, data []byte) Update {
