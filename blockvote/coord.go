@@ -106,11 +106,9 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 		coordIp,
 		peers,
 		nil,
-		gossip.Peer{
-			Identifier:   "coord",
-			Active:       true,
-			Type:         gossip.TypeTracker,
-			Subscription: gossip.SubscribeNode,
+		&gossip.Peer{
+			Identifier: "coord",
+			Type:       gossip.TypeTracker,
 		},
 		true)
 	if err != nil {
@@ -138,7 +136,7 @@ func (c *Coord) Start(clientAPIListenAddr string, minerAPIListenAddr string, nCa
 	// make node list persistent on disk
 	for {
 		time.Sleep(5 * time.Second)
-		nodeList := gossip.GetPeers()
+		nodeList := gossip.GetPeers(true, false)
 		for _, node := range nodeList {
 			if node.Type == gossip.TypeMiner {
 				c.Storage.Put(util.DBKeyWithPrefix(NodeKeyPrefix, []byte(node.Identifier)), node.Encode())
@@ -249,7 +247,7 @@ type CoordAPIMiner struct {
 // GetPeers provides peer information
 func (api *CoordAPIMiner) GetPeers(args GetPeersArgs, reply *GetPeersReply) error {
 	*reply = GetPeersReply{
-		Peers: append(gossip.GetPeers(), gossip.Identity),
+		Peers: gossip.GetPeers(false, false),
 	}
 	return nil
 }
@@ -286,8 +284,8 @@ func (api *CoordAPIClient) GetCandidates(args GetCandidatesArgs, reply *GetCandi
 func (api *CoordAPIClient) GetEntryPoints(args GetEntryPointsArgs, reply *GetEntryPointsReply) error {
 	// access points consist of api listeners of all miners
 	var accessPoints []string
-	for _, node := range gossip.GetPeers() {
-		if node.Type == "miner" && node.Active {
+	for _, node := range gossip.GetPeers(true, true) {
+		if node.Type == "miner" {
 			accessPoints = append(accessPoints, node.APIAddr)
 		}
 	}

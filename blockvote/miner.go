@@ -160,13 +160,13 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 		var dlBlockchain [][]byte
 		var dlLastHash []byte
 		var dlTxnPool TxnPool
-		var minerPeers []gossip.Peer
+		var activeMinerPeers []gossip.Peer
 		for _, p := range reply.Peers {
 			if p.Type == gossip.TypeMiner && p.Active {
-				minerPeers = append(minerPeers, p)
+				activeMinerPeers = append(activeMinerPeers, p)
 			}
 		}
-		if len(minerPeers) == 0 {
+		if len(activeMinerPeers) == 0 {
 			// no peers, download from coord
 			log.Println("[INFO] Downloading initial system states from coord...")
 			reply := GetInitialStatesReply{}
@@ -187,11 +187,11 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 		} else {
 			// peers exist, download from a peer
 			log.Println("[INFO] Downloading system states from peers...")
-			for len(minerPeers) > 0 {
+			for len(activeMinerPeers) > 0 {
 				i := 0
-				for i < len(minerPeers) { // attempt to download from selected peer
+				for i < len(activeMinerPeers) { // attempt to download from selected peer
 					// get txn pool from the peer
-					toPullMinerAddr := minerPeers[i].APIAddr
+					toPullMinerAddr := activeMinerPeers[i].APIAddr
 					minerClient, err := rpc.Dial("tcp", toPullMinerAddr)
 					if err != nil {
 						i++
@@ -210,7 +210,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 					log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
 					break
 				}
-				if i == len(minerPeers) {
+				if i == len(activeMinerPeers) {
 					// if all peers failed, contact coord again for updated peer address list
 					err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
 					for err != nil {
@@ -223,10 +223,10 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 						}
 						err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
 					}
-					minerPeers = []gossip.Peer{}
+					activeMinerPeers = []gossip.Peer{}
 					for _, p := range reply.Peers {
 						if p.Type == gossip.TypeMiner && p.Active {
-							minerPeers = append(minerPeers, p)
+							activeMinerPeers = append(activeMinerPeers, p)
 						}
 					}
 				} else {
@@ -280,7 +280,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 		util.CheckErr(err, "[ERROR] error reloading node list")
 		for _, val := range values {
 			node := gossip.DecodeToPeer(val)
-			node.Active = true // mark all nodes as active to reduce the chance of isolation
+			//node.Active = true // mark all nodes as active to reduce the chance of isolation
 			peers = append(peers, node)
 		}
 		//TODO: if all peers down, need to contact coord again
@@ -322,7 +322,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 		count++
 		if count == 1 {
 			// save peer info every 10 seconds
-			nodeList := gossip.GetPeers()
+			nodeList := gossip.GetPeers(true, false)
 			for _, node := range nodeList {
 				if node.Type == gossip.TypeMiner {
 					_ = m.Storage.Put(util.DBKeyWithPrefix(NodeKeyPrefix, []byte(node.Identifier)), node.Encode())
@@ -331,8 +331,8 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 
 			// TODO: might need to contact coord again if all peers are down.
 
-		} else if count == 6 {
-			// print chain every 60 seconds
+		} else if count == 3 {
+			// print chain every 30 seconds
 			m.PrintChain()
 			count = 0
 		}
@@ -397,12 +397,11 @@ func (m *Miner) InitGossip(ip string, peers []gossip.Peer) error {
 		ip,
 		peers,
 		existingUpdates,
-		gossip.Peer{
+		&gossip.Peer{
 			Identifier:   m.Info.NodeID,
 			APIAddr:      m.Info.ClientListenAddr,
-			Active:       true,
 			Type:         gossip.TypeMiner,
-			Subscription: gossip.SubscribeNode | gossip.SubscribeTxn | gossip.SubscribeBlock,
+			Subscription: gossip.SubscribeTxn | gossip.SubscribeBlock,
 		},
 		true)
 	m.Info.GossipAddr = gossipAddr
@@ -690,7 +689,7 @@ func (m *Miner) Download() (encodedBlockchain [][]byte, lastHash []byte, candida
 	txnPool = m.MemoryPool
 	m.mu.Unlock()
 
-	peers = append(gossip.GetPeers(), gossip.Identity) // its peers and itself
+	peers = gossip.GetPeers(false, false) // its peers and itself
 	return
 }
 
