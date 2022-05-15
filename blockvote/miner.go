@@ -119,6 +119,59 @@ type TxnPool struct {
 	PendingTxns []blockchain.Transaction
 }
 
+type CoordConnection struct {
+	mu        sync.Mutex
+	Client    *rpc.Client
+	MinerAddr string
+	CoordAddr string
+}
+
+func NewCoordConnection(minerAddr string, coordAddr string) *CoordConnection {
+	coordConnection := CoordConnection{MinerAddr: minerAddr, CoordAddr: coordAddr}
+	return &coordConnection
+}
+
+func (cc *CoordConnection) Connect() {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	var err error
+	for {
+		cc.Client, err = util.NewRPCClient(cc.MinerAddr, cc.CoordAddr)
+		if err == nil {
+			break
+		}
+		log.Println("[INFO] Reattempting to establish connection with coord...")
+	}
+}
+
+func (cc *CoordConnection) Send(serviceMethod string, args interface{}, reply interface{}) {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+
+	// check if connected
+	if cc.Client == nil {
+		cc.Connect()
+	}
+
+	var err error
+	for {
+		err = cc.Client.Call(serviceMethod, args, reply)
+		if err == nil {
+			break
+		}
+		// rpc connection is interrupted, need to reconnect
+		cc.Connect()
+	}
+}
+
+func (cc *CoordConnection) Close() {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if cc.Client != nil {
+		_ = cc.Client.Close()
+	}
+}
+
 func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn uint8) error {
 	m.MaxTxn = maxTxn
 	m.Info.NodeID = minerId
@@ -136,25 +189,11 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 		// 2.1 Contact coord and download from peers
 		// 2.1.1 Connect to coord
 		log.Println("[INFO] Retrieving information from coord...")
-		coordClient, err := util.NewRPCClient(minerAddr, coordAddr)
-		for err != nil {
-			log.Println("[INFO] Reattempting to establish connection with coord...")
-			coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
-		}
+		coordConn := NewCoordConnection(minerAddr, coordAddr)
+		coordConn.Connect()
 		// 2.1.2 Get peers from coord
 		reply := GetPeersReply{}
-		err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
-		for err != nil {
-			log.Println("[INFO] Reattempting to get peers from coord...")
-			for {
-				// rpc connection is interrupted, need to reconnect
-				coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
-				if err == nil {
-					break
-				}
-			}
-			err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
-		}
+		coordConn.Send("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
 		// 2.1.3 Download data from peers
 		var dlCandidates [][]byte
 		var dlBlockchain [][]byte
@@ -170,17 +209,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 			// no peers, download from coord
 			log.Println("[INFO] Downloading initial system states from coord...")
 			reply := GetInitialStatesReply{}
-			err = coordClient.Call("CoordAPIMiner.GetInitialStates", GetInitialStatesArgs{}, &reply)
-			for err != nil {
-				for {
-					// rpc connection is interrupted, need to reconnect
-					coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
-					if err == nil {
-						break
-					}
-				}
-				err = coordClient.Call("CoordAPIMiner.GetInitialStates", GetInitialStatesArgs{}, &reply)
-			}
+			coordConn.Send("CoordAPIMiner.GetInitialStates", GetInitialStatesArgs{}, &reply)
 			dlCandidates = reply.Candidates
 			dlBlockchain = reply.Blockchain
 			dlLastHash = reply.LastHash
@@ -212,17 +241,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 				}
 				if i == len(activeMinerPeers) {
 					// if all peers failed, contact coord again for updated peer address list
-					err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
-					for err != nil {
-						for {
-							// rpc connection is interrupted, need to reconnect
-							coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
-							if err == nil {
-								break
-							}
-						}
-						err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
-					}
+					coordConn.Send("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
 					activeMinerPeers = []gossip.Peer{}
 					for _, p := range reply.Peers {
 						if p.Type == gossip.TypeMiner && p.Active {
@@ -236,23 +255,10 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 		}
 		// 2.1.4 Set up local states
 		// 2.1.4.1 Setup candidates
-		log.Println("[INFO] Setting up candidates...")
-		for _, cand := range dlCandidates {
-			wallets := Identity.DecodeToWallets(cand)
-			m.Candidates = append(m.Candidates, wallets)
-		}
+		m.InitCandidates(resume, dlCandidates)
 
 		// 2.1.4.2 Setup blockchain
-		log.Println("[INFO] Setting up blockchain...")
-		var candidates []*Identity.Wallets
-		for _, cand := range dlCandidates {
-			candidates = append(candidates, Identity.DecodeToWallets(cand))
-		}
-		m.Blockchain = blockchain.NewBlockChain(m.Storage, candidates)
-		err = m.Blockchain.ResumeFromEncodedData(dlBlockchain, dlLastHash)
-		if err != nil {
-			return errors.New("cannot resume blockchain")
-		}
+		m.InitBlockchain(resume, dlBlockchain, dlLastHash)
 
 		// 2.1.4.3 Setup txn pool (download from any of its peers)
 		log.Println("[INFO] Setting up memory pool...")
@@ -264,26 +270,19 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	} else {
 		// 2.2 Reload from disk
 		// 2.2.1 Reload candidates
-		log.Println("[INFO] Reloading candidates...")
-		values, err := m.Storage.GetAllWithPrefix(CandidateKeyPrefix)
-		util.CheckErr(err, "[ERROR] error reloading candidates")
-		for _, val := range values {
-			cand := Identity.DecodeToWallets(val)
-			m.Candidates = append(m.Candidates, cand)
-		}
+		m.InitCandidates(resume, nil)
 		// 2.2.2 Reload blockchain
-		m.Blockchain = blockchain.NewBlockChain(m.Storage, m.Candidates)
-		err = m.Blockchain.ResumeFromDB()
-		util.CheckErr(err, "[ERROR] error when reloading blockchain")
+		m.InitBlockchain(resume, nil, nil)
 		// 2.2.3 Reload peers
-		values, err = m.Storage.GetAllWithPrefix(NodeKeyPrefix)
+		values, err := m.Storage.GetAllWithPrefix(NodeKeyPrefix)
 		util.CheckErr(err, "[ERROR] error reloading node list")
 		for _, val := range values {
 			node := gossip.DecodeToPeer(val)
-			//node.Active = true // mark all nodes as active to reduce the chance of isolation
+			if node.Type == gossip.TypeTracker && !node.Active {
+				node.Active = true // mark all tracker nodes as active to reduce the chance of isolation
+			}
 			peers = append(peers, node)
 		}
-		//TODO: if all peers down, need to contact coord again
 	}
 
 	// 3. Start API services
@@ -343,10 +342,12 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 func (m *Miner) InitStorage() (resume bool) {
 	storageDir := "./storage/" + m.Info.NodeID
 	if _, err := os.Stat(storageDir); err == nil {
+		log.Println("[INFO] Reloading storage...")
 		err := m.Storage.Load(storageDir)
 		util.CheckErr(err, "[ERROR] error when reloading database")
 		resume = true
 	} else if os.IsNotExist(err) {
+		log.Println("[INFO] Setting up storage...")
 		err := m.Storage.New(storageDir, false)
 		util.CheckErr(err, "[ERROR] error when creating database")
 		resume = false
@@ -354,6 +355,39 @@ func (m *Miner) InitStorage() (resume bool) {
 		util.CheckErr(err, "[ERROR] OS error")
 	}
 	return resume
+}
+
+func (m *Miner) InitCandidates(resume bool, data [][]byte) {
+	if !resume {
+		log.Println("[INFO] Setting up candidates...")
+		for _, cand := range data {
+			wallets := Identity.DecodeToWallets(cand)
+			m.Candidates = append(m.Candidates, wallets)
+		}
+	} else {
+		// resume
+		log.Println("[INFO] Reloading candidates...")
+		data, err := m.Storage.GetAllWithPrefix(CandidateKeyPrefix)
+		util.CheckErr(err, "[ERROR] error reloading candidates")
+		for _, val := range data {
+			cand := Identity.DecodeToWallets(val)
+			m.Candidates = append(m.Candidates, cand)
+		}
+	}
+}
+
+func (m *Miner) InitBlockchain(resume bool, chainData [][]byte, lastHash []byte) {
+	if !resume {
+		log.Println("[INFO] Setting up blockchain...")
+		m.Blockchain = blockchain.NewBlockChain(m.Storage, m.Candidates)
+		err := m.Blockchain.ResumeFromEncodedData(chainData, lastHash)
+		util.CheckErr(err, "[ERROR] error resuming blockchain")
+	} else {
+		log.Println("[INFO] Reloading blockchain...")
+		m.Blockchain = blockchain.NewBlockChain(m.Storage, m.Candidates)
+		err := m.Blockchain.ResumeFromDB()
+		util.CheckErr(err, "[ERROR] error reloading blockchain")
+	}
 }
 
 func (m *Miner) InitGossip(ip string, peers []gossip.Peer) error {
