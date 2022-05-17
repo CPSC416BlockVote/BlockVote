@@ -13,9 +13,18 @@ func main() {
 	util.ReadJSONConfig("config/miner_config.json", &config)
 
 	// parse args
+	var restart bool
+	flag.BoolVar(&restart, "r", false, "whether to restart miner")
 	flag.StringVar(&config.MinerId, "id", config.MinerId, "miner ID")
 	flag.StringVar(&config.MinerAddr, "addr", config.MinerAddr, "miner IP:Port")
 	flag.Parse()
+
+	// delete storage for clean start
+	if !restart {
+		if _, err := os.Stat("./storage/" + config.MinerId); err == nil {
+			os.RemoveAll("./storage/" + config.MinerId)
+		}
+	}
 
 	// redirect output to file
 	if len(os.Args) > 1 {

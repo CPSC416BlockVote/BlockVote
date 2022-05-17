@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/rpc"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -89,7 +90,7 @@ type Miner struct {
 	Info         NodeInfo
 	rtMu         sync.Mutex
 	ReceivedTxns map[string]bool
-	Candidates   []Identity.Wallets
+	Candidates   []*Identity.Wallets
 	MemoryPool   TxnPool
 	MaxTxn       uint8
 
@@ -119,21 +120,176 @@ type TxnPool struct {
 	PendingTxns []blockchain.Transaction
 }
 
+type CoordConnection struct {
+	mu        sync.Mutex
+	Client    *rpc.Client
+	MinerAddr string
+	CoordAddr string
+}
+
+func NewCoordConnection(minerAddr string, coordAddr string) *CoordConnection {
+	coordConnection := CoordConnection{MinerAddr: minerAddr, CoordAddr: coordAddr}
+	return &coordConnection
+}
+
+func (cc *CoordConnection) Connect() {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	var err error
+	for {
+		cc.Client, err = util.NewRPCClient(cc.MinerAddr, cc.CoordAddr)
+		if err == nil {
+			break
+		}
+		log.Println("[INFO] Reattempting to establish connection with coord...")
+	}
+}
+
+func (cc *CoordConnection) Send(serviceMethod string, args interface{}, reply interface{}) {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+
+	// check if connected
+	if cc.Client == nil {
+		cc.Connect()
+	}
+
+	var err error
+	for {
+		err = cc.Client.Call(serviceMethod, args, reply)
+		if err == nil {
+			break
+		}
+		// rpc connection is interrupted, need to reconnect
+		cc.Connect()
+	}
+}
+
+func (cc *CoordConnection) Close() {
+	cc.mu.Lock()
+	defer cc.mu.Unlock()
+	if cc.Client != nil {
+		_ = cc.Client.Close()
+	}
+}
+
 func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn uint8) error {
 	m.MaxTxn = maxTxn
 	m.Info.NodeID = minerId
-	err := m.Storage.New("", true)
-	if err != nil {
-		util.CheckErr(err, "error when creating database")
-	}
+
+	// 1. Initialization
+	resume := m.InitStorage()
 	defer m.Storage.Close()
 
 	m.cond = sync.NewCond(&m.mu)
 	m.mu.Lock()
-	// starting API services
-	minerIP := minerAddr[0:strings.Index(minerAddr, ":")]
 
-	// << client
+	// 2. Miner joining
+	var peers []gossip.Peer
+	if !resume {
+		// 2.1 Contact coord and download from peers
+		// 2.1.1 Connect to coord
+		log.Println("[INFO] Retrieving information from coord...")
+		coordConn := NewCoordConnection(minerAddr, coordAddr)
+		coordConn.Connect()
+		// 2.1.2 Get peers from coord
+		reply := GetPeersReply{}
+		coordConn.Send("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
+		// 2.1.3 Download data from peers
+		var dlCandidates [][]byte
+		var dlBlockchain [][]byte
+		var dlLastHash []byte
+		var dlTxnPool TxnPool
+		var activeMinerPeers []gossip.Peer
+		for _, p := range reply.Peers {
+			if p.Type == gossip.TypeMiner && p.Active {
+				activeMinerPeers = append(activeMinerPeers, p)
+			}
+		}
+		if len(activeMinerPeers) == 0 {
+			// no peers, download from coord
+			log.Println("[INFO] Downloading initial system states from coord...")
+			reply := GetInitialStatesReply{}
+			coordConn.Send("CoordAPIMiner.GetInitialStates", GetInitialStatesArgs{}, &reply)
+			dlCandidates = reply.Candidates
+			dlBlockchain = reply.Blockchain
+			dlLastHash = reply.LastHash
+		} else {
+			// peers exist, download from a peer
+			log.Println("[INFO] Downloading system states from peers...")
+			for len(activeMinerPeers) > 0 {
+				i := 0
+				for i < len(activeMinerPeers) { // attempt to download from selected peer
+					log.Println("[INFO] Downloading from " + activeMinerPeers[i].Identifier + "...")
+					// get txn pool from the peer
+					toPullMinerAddr := activeMinerPeers[i].APIAddr
+					minerClient, err := rpc.Dial("tcp", toPullMinerAddr)
+					if err != nil {
+						i++
+						continue
+					}
+					reply := DownloadReply{}
+					err = minerClient.Call("EntryPointAPI.Download", DownloadArgs{}, &reply)
+					if err != nil {
+						i++
+						continue
+					}
+					dlCandidates = reply.Candidates
+					dlBlockchain = reply.BlockChain
+					dlLastHash = reply.LastHash
+					dlTxnPool = reply.MemoryPool
+					log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
+					break
+				}
+				if i == len(activeMinerPeers) {
+					log.Println("[INFO] Failed to download from any peer, retrieving latest peers from coord...")
+					// if all peers failed, contact coord again for updated peer address list
+					coordConn.Send("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
+					activeMinerPeers = []gossip.Peer{}
+					for _, p := range reply.Peers {
+						if p.Type == gossip.TypeMiner && p.Active {
+							activeMinerPeers = append(activeMinerPeers, p)
+						}
+					}
+				} else {
+					break
+				}
+			}
+		}
+		// 2.1.4 Set up local states
+		// 2.1.4.1 Setup candidates
+		m.InitCandidates(resume, dlCandidates)
+
+		// 2.1.4.2 Setup blockchain
+		m.InitBlockchain(resume, dlBlockchain, dlLastHash)
+
+		// 2.1.4.3 Setup txn pool (download from any of its peers)
+		log.Println("[INFO] Setting up memory pool...")
+		m.MemoryPool = dlTxnPool
+		log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
+
+		// 2.1.4.4 Setup peers
+		peers = reply.Peers
+	} else {
+		// 2.2 Reload from disk
+		// 2.2.1 Reload candidates
+		m.InitCandidates(resume, nil)
+		// 2.2.2 Reload blockchain
+		m.InitBlockchain(resume, nil, nil)
+		// 2.2.3 Reload peers
+		values, err := m.Storage.GetAllWithPrefix(NodeKeyPrefix)
+		util.CheckErr(err, "[ERROR] error reloading node list")
+		for _, val := range values {
+			node := gossip.DecodeToPeer(val)
+			if node.Type == gossip.TypeTracker && !node.Active {
+				node.Active = true // mark all tracker nodes as active to reduce the chance of isolation
+			}
+			peers = append(peers, node)
+		}
+	}
+
+	// 3. Start API services
+	minerIP := minerAddr[0:strings.Index(minerAddr, ":")]
 	entryPointAPI := new(EntryPointAPI)
 	entryPointAPI.e = m
 	clientListenAddr, err := util.NewRPCServerWithIp(entryPointAPI, minerIP)
@@ -143,177 +299,11 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	m.Info.ClientListenAddr = clientListenAddr
 	log.Println("[INFO] Listen to clients' API requests at", m.Info.ClientListenAddr)
 
-	// Miner join
-	log.Println("[INFO] Retrieving information from coord...")
-	coordClient, err := util.NewRPCClient(minerAddr, coordAddr)
-	for err != nil {
-		log.Println("[INFO] Reattempting to establish connection with coord...")
-		coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
-	}
-	// get peers from coord
-	reply := GetPeersReply{}
-	err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
-	for err != nil {
-		log.Println("[INFO] Reattempting to get peers from coord...")
-		for {
-			// rpc connection is interrupted, need to reconnect
-			coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
-			if err == nil {
-				break
-			}
-		}
-		err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
-	}
-	// download data from peers
-	var dlCandidates [][]byte
-	var dlBlockchain [][]byte
-	var dlLastHash []byte
-	var dlTxnPool TxnPool
-	var minerPeers []gossip.Peer
-	for _, p := range reply.Peers {
-		if p.Type == gossip.TypeMiner && p.Active {
-			minerPeers = append(minerPeers, p)
-		}
-	}
-	if len(minerPeers) == 0 {
-		// no peers, download from coord
-		log.Println("[INFO] Downloading initial system states from coord...")
-		reply := GetInitialStatesReply{}
-		err = coordClient.Call("CoordAPIMiner.GetInitialStates", GetInitialStatesArgs{}, &reply)
-		for err != nil {
-			for {
-				// rpc connection is interrupted, need to reconnect
-				coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
-				if err == nil {
-					break
-				}
-			}
-			err = coordClient.Call("CoordAPIMiner.GetInitialStates", GetInitialStatesArgs{}, &reply)
-		}
-		dlCandidates = reply.Candidates
-		dlBlockchain = reply.Blockchain
-		dlLastHash = reply.LastHash
-	} else {
-		// peers exist, download from a peer
-		log.Println("[INFO] Downloading system states from peers...")
-		for len(minerPeers) > 0 {
-			i := 0
-			for i < len(minerPeers) { // attempt to download from selected peer
-				// get txn pool from the peer
-				toPullMinerAddr := minerPeers[i].APIAddr
-				minerClient, err := rpc.Dial("tcp", toPullMinerAddr)
-				if err != nil {
-					i++
-					continue
-				}
-				reply := DownloadReply{}
-				err = minerClient.Call("EntryPointAPI.Download", DownloadArgs{}, &reply)
-				if err != nil {
-					i++
-					continue
-				}
-				dlCandidates = reply.Candidates
-				dlBlockchain = reply.BlockChain
-				dlLastHash = reply.LastHash
-				dlTxnPool = reply.MemoryPool
-				log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
-				break
-			}
-			if i == len(minerPeers) {
-				// if all peers failed, contact coord again for updated peer address list
-				err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
-				for err != nil {
-					for {
-						// rpc connection is interrupted, need to reconnect
-						coordClient, err = util.NewRPCClient(minerAddr, coordAddr)
-						if err == nil {
-							break
-						}
-					}
-					err = coordClient.Call("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
-				}
-				minerPeers = []gossip.Peer{}
-				for _, p := range reply.Peers {
-					if p.Type == gossip.TypeMiner && p.Active {
-						minerPeers = append(minerPeers, p)
-					}
-				}
-			} else {
-				break
-			}
-		}
-	}
-	// setup candidates
-	log.Println("[INFO] Setting up candidates...")
-	for _, cand := range dlCandidates {
-		wallets := Identity.DecodeToWallets(cand)
-		m.Candidates = append(m.Candidates, *wallets)
-	}
-
-	// setup blockchain
-	log.Println("[INFO] Setting up blockchain...")
-	var candidates []*Identity.Wallets
-	for _, cand := range dlCandidates {
-		candidates = append(candidates, Identity.DecodeToWallets(cand))
-	}
-	m.Blockchain = blockchain.NewBlockChain(m.Storage, candidates)
-	err = m.Blockchain.ResumeFromEncodedData(dlBlockchain, dlLastHash)
-	if err != nil {
-		return errors.New("cannot resume blockchain")
-	}
-
-	// setup txn pool (download from any of its peers)
-	log.Println("[INFO] Setting up memory pool...")
-	m.MemoryPool = dlTxnPool
-	log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
-
-	// setup gossip client
-	log.Println("[INFO] Setting up gossip client...")
-	var existingUpdates []gossip.Update
-	blockchainData, _ := m.Blockchain.Encode()
-	for _, data := range blockchainData { // existing block updates
-		existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.BlockIDPrefix, blockchain.DecodeToBlock(data).Hash, data))
-	}
-	for _, txn := range m.MemoryPool.PendingTxns { // existing txn update from pool
-		existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.TransactionIDPrefix, txn.ID, txn.Serialize()))
-	}
-	iter := m.Blockchain.NewIterator(m.Blockchain.GetLastHash())
-	for block, end := iter.Next(); !end; block, end = iter.Next() { // existing txn update from the longest chain
-		for _, txn := range block.Txns {
-			exist := false
-			for idx, pendingTxn := range m.MemoryPool.PendingTxns { // check duplicate
-				if bytes.Compare(txn.ID, pendingTxn.ID) == 0 {
-					m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:idx], m.MemoryPool.PendingTxns[idx+1:]...)
-					exist = true
-					break
-				}
-			}
-			if !exist {
-				existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.TransactionIDPrefix, txn.ID, txn.Serialize()))
-			}
-		}
-	}
-	queryChan, updateChan, gossipAddr, err := gossip.Start(
-		2,
-		gossip.OpModePushPull,
-		gossip.TriggerNewUpdate,
-		minerIP,
-		reply.Peers,
-		existingUpdates,
-		gossip.Peer{
-			Identifier:   minerId,
-			APIAddr:      clientListenAddr,
-			Active:       true,
-			Type:         gossip.TypeMiner,
-			Subscription: gossip.SubscribeNode | gossip.SubscribeTxn | gossip.SubscribeBlock,
-		},
-		true)
+	// 4. Setup gossip client
+	err = m.InitGossip(minerIP, peers)
 	if err != nil {
 		return err
 	}
-	m.Info.GossipAddr = gossipAddr
-	m.queryChan = queryChan
-	m.updateChan = updateChan
 
 	// starting internal services
 	log.Println("[INFO] Starting routines...")
@@ -328,11 +318,139 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	m.cond.Broadcast()
 	m.mu.Unlock()
 
+	count := 0
 	for {
-		m.PrintChain()
-		time.Sleep(time.Minute)
+		time.Sleep(10 * time.Second)
+		count++
+		if count == 1 {
+			// save peer info every 10 seconds
+			nodeList := gossip.GetPeers(true, false)
+			for _, node := range nodeList {
+				if node.Type == gossip.TypeMiner {
+					_ = m.Storage.Put(util.DBKeyWithPrefix(NodeKeyPrefix, []byte(node.Identifier)), node.Encode())
+				}
+			}
+
+			// TODO: might need to contact coord again if all peers are down.
+
+		} else if count == 3 {
+			// print chain every 30 seconds
+			m.PrintChain()
+			count = 0
+		}
 	}
 	return nil
+}
+
+func (m *Miner) InitStorage() (resume bool) {
+	storageDir := "./storage/" + m.Info.NodeID
+	if _, err := os.Stat(storageDir); err == nil {
+		log.Println("[INFO] Reloading storage...")
+		err := m.Storage.Load(storageDir)
+		util.CheckErr(err, "[ERROR] error when reloading database")
+		resume = true
+	} else if os.IsNotExist(err) {
+		log.Println("[INFO] Setting up storage...")
+		err := m.Storage.New(storageDir, false)
+		util.CheckErr(err, "[ERROR] error when creating database")
+		resume = false
+	} else {
+		util.CheckErr(err, "[ERROR] OS error")
+	}
+	return resume
+}
+
+func (m *Miner) InitCandidates(resume bool, data [][]byte) {
+	if !resume {
+		log.Println("[INFO] Setting up candidates...")
+		var keys [][]byte
+		var values [][]byte
+		for i, cand := range data {
+			wallets := Identity.DecodeToWallets(cand)
+			m.Candidates = append(m.Candidates, wallets)
+			keys = append(keys, util.DBKeyWithPrefix(CandidateKeyPrefix, []byte(strconv.Itoa(i))))
+			values = append(values, wallets.Encode())
+		}
+		err := m.Storage.PutMulti(keys, values)
+		util.CheckErr(err, "[ERROR] error when saving candidates")
+	} else {
+		// resume
+		log.Println("[INFO] Reloading candidates...")
+		data, err := m.Storage.GetAllWithPrefix(CandidateKeyPrefix)
+		util.CheckErr(err, "[ERROR] error reloading candidates")
+		for _, val := range data {
+			cand := Identity.DecodeToWallets(val)
+			m.Candidates = append(m.Candidates, cand)
+		}
+	}
+}
+
+func (m *Miner) InitBlockchain(resume bool, chainData [][]byte, lastHash []byte) {
+	if !resume {
+		log.Println("[INFO] Setting up blockchain...")
+		m.Blockchain = blockchain.NewBlockChain(m.Storage, m.Candidates)
+		err := m.Blockchain.ResumeFromEncodedData(chainData, lastHash)
+		util.CheckErr(err, "[ERROR] error resuming blockchain")
+	} else {
+		log.Println("[INFO] Reloading blockchain...")
+		m.Blockchain = blockchain.NewBlockChain(m.Storage, m.Candidates)
+		err := m.Blockchain.ResumeFromDB()
+		util.CheckErr(err, "[ERROR] error reloading blockchain")
+	}
+}
+
+func (m *Miner) InitGossip(ip string, peers []gossip.Peer) error {
+	log.Println("[INFO] Setting up gossip client...")
+
+	// Reconstruct existing updates (need to ensure order)
+	var existingUpdates []gossip.Update
+
+	blockBytes, _ := m.Blockchain.Encode()
+	blockMap := make(map[int][]blockchain.Block) // to order blocks based on block num
+	txnExistMap := make(map[string]bool)         // to avoid duplicate txns
+	// Existing txn updates from blockchain (should be added before blocks)
+	for _, data := range blockBytes {
+		block := blockchain.DecodeToBlock(data)
+		blockMap[int(block.BlockNum)] = append(blockMap[int(block.BlockNum)], *block)
+		for _, txn := range block.Txns {
+			if !txnExistMap[string(txn.ID)] {
+				txnExistMap[string(txn.ID)] = true
+				existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.TransactionIDPrefix, txn.ID, txn.Serialize()))
+			}
+		}
+	}
+	// Existing block updates from blockchain (should be added based on their positions in the blockchain)
+	for i := 0; i < len(blockMap); i++ { // block num starts from 0
+		for _, block := range blockMap[i] {
+			existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.BlockIDPrefix, block.Hash, block.Encode()))
+		}
+	}
+	// Existing txn update from pool
+	for _, txn := range m.MemoryPool.PendingTxns {
+		if !txnExistMap[string(txn.ID)] {
+			txnExistMap[string(txn.ID)] = true
+			existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.TransactionIDPrefix, txn.ID, txn.Serialize()))
+		}
+	}
+
+	queryChan, updateChan, gossipAddr, err := gossip.Start(
+		2,
+		gossip.OpModePushPull,
+		gossip.TriggerNewUpdate,
+		ip,
+		peers,
+		existingUpdates,
+		&gossip.Peer{
+			Identifier:   m.Info.NodeID,
+			APIAddr:      m.Info.ClientListenAddr,
+			Type:         gossip.TypeMiner,
+			Subscription: gossip.SubscribeTxn | gossip.SubscribeBlock,
+		},
+		true)
+	m.Info.GossipAddr = gossipAddr
+	m.queryChan = queryChan
+	m.updateChan = updateChan
+	return err
 }
 
 func (m *Miner) DigestUpdates() {
@@ -563,6 +681,8 @@ func (m *Miner) selectTxns() (selectedTxn []*blockchain.Transaction) {
 
 func (m *Miner) PrintChain() {
 	votes, txns := m.Blockchain.VotingStatus()
+
+	log.Println("[INFO] Printing...")
 	fv, err := os.Create("./" + m.Info.NodeID + "votes.txt")
 	util.CheckErr(err, "Unable to create votes.txt")
 	defer fv.Close()
@@ -577,6 +697,7 @@ func (m *Miner) PrintChain() {
 		ft.WriteString(fmt.Sprintf("%x,%s,%s\n", txn.ID, txn.Data.VoterName, txn.Data.VoterCandidate))
 	}
 	ft.Sync()
+	log.Println("[INFO] Printed.")
 }
 
 // ----- APIs
@@ -606,15 +727,15 @@ func (m *Miner) CheckResults() []uint {
 
 func (m *Miner) Download() (encodedBlockchain [][]byte, lastHash []byte, candidates [][]byte, txnPool TxnPool, peers []gossip.Peer) {
 	// prepare reply data
-	encodedBlockchain, lastHash = m.Blockchain.Encode()
 	for _, cand := range m.Candidates {
 		candidates = append(candidates, cand.Encode())
 	}
-	m.mu.Lock()
+	m.mu.Lock() // lock ensures that blockchain data and memory pool are from the same moment
+	encodedBlockchain, lastHash = m.Blockchain.Encode()
 	txnPool = m.MemoryPool
 	m.mu.Unlock()
 
-	peers = append(gossip.GetPeers(), gossip.Identity) // its peers and itself
+	peers = gossip.GetPeers(false, false) // its peers and itself
 	return
 }
 

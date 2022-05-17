@@ -144,7 +144,7 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 	}
 	if !bc.Exist(block.PrevHash) {
 		log.Printf("[WARN] Previous block (%x) does not exist and "+
-			"the block (%x) will not be added to the chain.\n", block.PrevHash[:5], block.Hash[:5])
+			"the block (%x) from [%s] will not be added to the chain.\n", block.PrevHash[:5], block.Hash[:5], block.MinerID)
 		success = false
 		return
 	}
@@ -159,14 +159,14 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 		// validate pow
 		pow := NewProof(&block)
 		if !pow.Validate() {
-			log.Println("invalid pow")
+			log.Println("[WARN] Block has invalid pow and is rejected")
 			success = false
 			return
 		}
 		// validate txns (use the chain that the block is on, not necessarily the longest)
 		for _, valid := range bc._ValidateTxns(block.Txns, false, block.PrevHash) {
 			if !valid {
-				log.Println("invalid txns")
+				log.Println("[WARN] Block has invalid txns and is rejected")
 				success = false
 				return
 			}
