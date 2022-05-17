@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/rpc"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -219,6 +220,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 			for len(activeMinerPeers) > 0 {
 				i := 0
 				for i < len(activeMinerPeers) { // attempt to download from selected peer
+					log.Println("[INFO] Downloading from " + activeMinerPeers[i].Identifier + "...")
 					// get txn pool from the peer
 					toPullMinerAddr := activeMinerPeers[i].APIAddr
 					minerClient, err := rpc.Dial("tcp", toPullMinerAddr)
@@ -240,6 +242,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 					break
 				}
 				if i == len(activeMinerPeers) {
+					log.Println("[INFO] Failed to download from any peer, retrieving latest peers from coord...")
 					// if all peers failed, contact coord again for updated peer address list
 					coordConn.Send("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
 					activeMinerPeers = []gossip.Peer{}
@@ -360,10 +363,16 @@ func (m *Miner) InitStorage() (resume bool) {
 func (m *Miner) InitCandidates(resume bool, data [][]byte) {
 	if !resume {
 		log.Println("[INFO] Setting up candidates...")
-		for _, cand := range data {
+		var keys [][]byte
+		var values [][]byte
+		for i, cand := range data {
 			wallets := Identity.DecodeToWallets(cand)
 			m.Candidates = append(m.Candidates, wallets)
+			keys = append(keys, util.DBKeyWithPrefix(CandidateKeyPrefix, []byte(strconv.Itoa(i))))
+			values = append(values, wallets.Encode())
 		}
+		err := m.Storage.PutMulti(keys, values)
+		util.CheckErr(err, "[ERROR] error when saving candidates")
 	} else {
 		// resume
 		log.Println("[INFO] Reloading candidates...")
@@ -672,6 +681,8 @@ func (m *Miner) selectTxns() (selectedTxn []*blockchain.Transaction) {
 
 func (m *Miner) PrintChain() {
 	votes, txns := m.Blockchain.VotingStatus()
+
+	log.Println("[INFO] Printing...")
 	fv, err := os.Create("./" + m.Info.NodeID + "votes.txt")
 	util.CheckErr(err, "Unable to create votes.txt")
 	defer fv.Close()
@@ -686,6 +697,7 @@ func (m *Miner) PrintChain() {
 		ft.WriteString(fmt.Sprintf("%x,%s,%s\n", txn.ID, txn.Data.VoterName, txn.Data.VoterCandidate))
 	}
 	ft.Sync()
+	log.Println("[INFO] Printed.")
 }
 
 // ----- APIs
@@ -715,11 +727,11 @@ func (m *Miner) CheckResults() []uint {
 
 func (m *Miner) Download() (encodedBlockchain [][]byte, lastHash []byte, candidates [][]byte, txnPool TxnPool, peers []gossip.Peer) {
 	// prepare reply data
-	encodedBlockchain, lastHash = m.Blockchain.Encode()
 	for _, cand := range m.Candidates {
 		candidates = append(candidates, cand.Encode())
 	}
-	m.mu.Lock()
+	m.mu.Lock() // lock ensures that blockchain data and memory pool are from the same moment
+	encodedBlockchain, lastHash = m.Blockchain.Encode()
 	txnPool = m.MemoryPool
 	m.mu.Unlock()
 

@@ -287,7 +287,9 @@ func (handler *RPCHandler) PushPull(args PushPullArgs, reply *PushPullReply) err
 	// request missing updates, and retransmit updates to peer
 	for _, id := range localLog {
 		if !peerMap[id] && checkSubscription(args.From.Subscription, id) {
+			rw.RLock()
 			reply.Updates = append(reply.Updates, updateMap[id])
+			rw.RUnlock()
 		}
 	}
 	return nil
