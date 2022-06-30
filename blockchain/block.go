@@ -9,7 +9,7 @@ import (
 
 type Block struct {
 	PrevHash []byte
-	BlockNum uint8
+	BlockNum uint
 	Nonce    uint32
 	Txns     []*Transaction
 	MinerID  string
@@ -60,7 +60,7 @@ func PrintBlock(block *Block) {
 	str += fmt.Sprintf("\tMinerID:\t %s\n", block.MinerID)
 	str += fmt.Sprintf("\tTxns:\t\t %d\n", len(block.Txns))
 	for _, txn := range block.Txns {
-		str += fmt.Sprintf("\t    %s\t -> %s\n", txn.Data.VoterName, txn.Data.VoterCandidate)
+		str += fmt.Sprintf("\t    status %d\t	%s\n", txn.Receipt.Code, txn.Data.ToString())
 	}
 	log.Print(str)
 }

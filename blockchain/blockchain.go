@@ -2,7 +2,6 @@ package blockchain
 
 import (
 	"bytes"
-	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
 	"errors"
 	"fmt"
@@ -17,10 +16,9 @@ const BlockKeyPrefix = "block-"
 const NumConfirmed = 4
 
 type BlockChain struct {
-	mu         sync.Mutex
-	LastHash   []byte // should not be accessed without locking (unsafe). should not be accessed directly from outside
-	DB         *util.Database
-	Candidates []*Identity.Wallets
+	mu       sync.Mutex
+	LastHash []byte // should not be accessed without locking (unsafe). should not be accessed directly from outside
+	DB       *util.Database
 }
 
 type ChainIterator struct {
@@ -30,10 +28,20 @@ type ChainIterator struct {
 	BlockChain  *BlockChain
 }
 
+type QueryHandler struct {
+	iter        *ChainIterator
+	pendingTxns []*Transaction // pending transactions that need to be considered for the query
+	numSkip     int            // number of blocks to skip
+}
+
+type QueryCondition func(*Transaction) bool
+
+type QueryGroupBy func(*Transaction) interface{}
+
 // ----- BlockChain APIs -----
 
-func NewBlockChain(DB *util.Database, candidates []*Identity.Wallets) *BlockChain {
-	return &BlockChain{DB: DB, Candidates: candidates}
+func NewBlockChain(DB *util.Database) *BlockChain {
+	return &BlockChain{DB: DB}
 }
 
 // Init initializes the blockchain with genesis block. For coord use only.
@@ -94,10 +102,11 @@ func (bc *BlockChain) ResumeFromEncodedData(blocks [][]byte, lastHash []byte) er
 }
 
 // GetLastHash provides a safe way to read the last hash of the blockchain from outside
-func (bc *BlockChain) GetLastHash() []byte {
+func (bc *BlockChain) GetLastHash() (lastHash []byte) {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
-	return bc.LastHash[:]
+	lastHash = append(lastHash, bc.LastHash...) // make a copy of slice as source will change
+	return lastHash
 }
 
 // Encode encodes all the blocks in the blockchain into a 2D byte array.
@@ -164,7 +173,7 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 			return
 		}
 		// validate txns (use the chain that the block is on, not necessarily the longest)
-		for _, valid := range bc._ValidateTxns(block.Txns, false, block.PrevHash) {
+		for _, valid := range bc._ValidateTxns(block.Txns, false, block.PrevHash, true) {
 			if !valid {
 				log.Println("[WARN] Block has invalid txns and is rejected")
 				success = false
@@ -274,34 +283,9 @@ func (bc *BlockChain) NewIterator(hash []byte) *ChainIterator {
 }
 
 // INTERNAL USE ONLY
-func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte) bool {
+func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte, pendingTxns []*Transaction, checkCode bool) bool {
 	// when fork is nil, default to validate on the longest chain
-	// 1. verify signature
-	if !txn.Verify() {
-		log.Println("txn has invalid signature")
-		log.Println(txn.Data, fmt.Sprintf("%x, %x", txn.Signature, txn.PublicKey))
-		return false
-	}
-	// 2. validate data
-	validCand := false
-	for _, cand := range bc.Candidates {
-		// 2.1 candidates cannot vote
-		if bytes.Compare(txn.PublicKey, cand.Wallets[cand.GetAddress()].PublicKey) == 0 {
-			log.Println("candidates cannot vote")
-			log.Println(txn.Data)
-			return false
-		}
-		// 2.2 voter can only vote for candidates
-		if txn.Data.VoterCandidate == cand.CandidateData.CandidateName {
-			validCand = true
-		}
-	}
-	if !validCand {
-		log.Println("voter can only vote for candidates")
-		log.Println(txn.Data)
-		return false
-	}
-	// 2.3: voter can only vote once
+
 	var iter *ChainIterator
 	if lock && fork == nil {
 		bc.mu.Lock()
@@ -314,38 +298,37 @@ func (bc *BlockChain) _ValidateTxn(txn *Transaction, lock bool, fork []byte) boo
 			iter = bc.NewIterator(fork)
 		}
 	}
+	queryHandler := NewQueryHandler(iter, pendingTxns, 0)
 
-	for block, end := iter.Next(); !end; block, end = iter.Next() {
-		for _, pastTxn := range block.Txns {
-			if bytes.Compare(pastTxn.PublicKey, txn.PublicKey) == 0 {
-				log.Println("voter has voted")
-				log.Println(txn.Data)
-				return false
-			}
-		}
+	valid, code := txn.Validate(queryHandler)
+	if checkCode && code != txn.Receipt.Code {
+		valid = false
+		code = TxnStatusInvalidStatus
 	}
+	txn.Receipt.Code = code
+
+	if !valid {
+		logInvalidTxn(txn)
+		return false
+	}
+
 	return true
 }
 
 // INTERNAL USE ONLY
-func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool, fork []byte) (res []bool) {
+func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool, fork []byte, checkStatus bool) (res []bool) {
 	// check conflicting txns (first received wins)
 	// NOTE: txns should be sorted by when they were received. earlier txns should appear in front
 	// when fork is nil, default to validate on the longest chain
+	// checkStatus: whether to check the status code of a transaction as a validation process, or to set them after validation
 	if lock {
 		bc.mu.Lock()
 	}
-	voterMap := make(map[string]bool)
+	var validPendingTxns []*Transaction
 	for _, txn := range txns {
-		if voterMap[fmt.Sprintf("%x", txn.PublicKey)] {
-			res = append(res, false)
-			log.Println("voter has voted in the same block")
-			log.Println(txn.Data)
-		} else {
-			res = append(res, bc._ValidateTxn(txn, false, fork))
-			if res[len(res)-1] {
-				voterMap[fmt.Sprintf("%x", txn.PublicKey)] = true
-			}
+		res = append(res, bc._ValidateTxn(txn, false, fork, validPendingTxns, checkStatus))
+		if res[len(res)-1] {
+			validPendingTxns = append(validPendingTxns, txn)
 		}
 	}
 	if lock {
@@ -354,61 +337,74 @@ func (bc *BlockChain) _ValidateTxns(txns []*Transaction, lock bool, fork []byte)
 	return
 }
 
-func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
-	return bc._ValidateTxn(txn, true, nil)
-}
+//func (bc *BlockChain) ValidateTxn(txn *Transaction) bool {
+//	return bc._ValidateTxn(txn, true, nil)
+//}
 
-// ValidateTxns validates a set of transactions and deal with conflicting transactions among them
-func (bc *BlockChain) ValidateTxns(txns []*Transaction) (res []bool) {
-	res = bc._ValidateTxns(txns, true, nil)
+// ValidatePendingTxns validates a set of pending transactions and set the status code for them
+func (bc *BlockChain) ValidatePendingTxns(txns []*Transaction) (res []bool) {
+	res = bc._ValidateTxns(txns, true, nil, false)
 	return
 }
 
 // TxnStatus returns the number of blocks that confirm the given txn. -1 indicates txn not found
-func (bc *BlockChain) TxnStatus(txid []byte) int {
+func (bc *BlockChain) TxnStatus(txId []byte) TransactionStatus {
 	// get an iterator for the longest chain
-	bc.mu.Lock()
-	iter := bc.NewIterator(bc.LastHash)
-	bc.mu.Unlock()
-	res := -1
-	for block, end := iter.Next(); !end; block, end = iter.Next() {
-		for _, txn := range block.Txns {
-			if bytes.Compare(txn.ID, txid) == 0 {
-				res = iter.Index
-				break
-			}
-		}
-		if res != -1 {
-			break
-		}
-	}
-
-	return res
+	queryHandler := NewQueryHandler(bc.NewIterator(bc.GetLastHash()), nil, 0)
+	return queryHandler.Status(txId)
 }
 
-func (bc *BlockChain) VotingStatus() (votes []uint, txns []Transaction) {
-	for i := 0; i < len(bc.Candidates); i++ {
-		votes = append(votes, 0)
-	}
-	bc.mu.Lock()
-	iter := bc.NewIterator(bc.LastHash)
-	bc.mu.Unlock()
-	skip := NumConfirmed // last NUM_CONFIRMED blocks do not count
-	for block, end := iter.Next(); !end; block, end = iter.Next() {
-		if skip > 0 {
-			skip--
-			continue
+func (bc *BlockChain) VotingStatus(pollID string) (meta PollMeta) {
+	queryHandler := NewQueryHandler(bc.NewIterator(bc.GetLastHash()), nil, NumConfirmed) // last NUM_CONFIRMED blocks do not
+
+	// find launch event and terminate event
+	events, bkNums := queryHandler.FetchWithBlockNum(func(txn *Transaction) bool {
+		return txn.Data.Method != PayloadMethodVote && txn.Data.PollID == pollID
+	})
+
+	// count votes
+	votesMap := queryHandler.CountByGroup(func(txn *Transaction) bool {
+		return txn.Data.Method == PayloadMethodVote && txn.Data.PollID == pollID
+	}, func(txn *Transaction) interface{} {
+		return txn.Data.Extra.(string)
+	})
+
+	// construct metadata
+	if len(events) == 2 {
+		// poll is ended
+		if events[0].Data.Method == PayloadMethodTerminate {
+			events[0], events[1] = events[1], events[0] // launch event first, then terminate event
+			bkNums[0], bkNums[1] = bkNums[1], bkNums[0]
 		}
-		for _, txn := range block.Txns {
-			txns = append(txns, *txn)
-			for idx, cand := range bc.Candidates {
-				if txn.Data.VoterCandidate == cand.CandidateData.CandidateName {
-					votes[idx]++
-					break
-				}
-			}
+		meta.EndBlock = bkNums[1]
+	} else if len(events) == 1 {
+		// poll may be ongoing
+		duration := events[0].Data.Extra.(Rules).Duration
+		if duration == 0 {
+			meta.EndBlock = 0
+		} else {
+			meta.EndBlock = bkNums[0] + duration
 		}
+	} else {
+		// poll not found
+		return
 	}
+	meta.PollID = pollID
+	rules := events[0].Data.Extra.(Rules)
+	var voteCounts []uint
+	totalVotes := uint(0)
+	for _, op := range rules.Options {
+		voteCounts = append(voteCounts, votesMap[op])
+		totalVotes += votesMap[op]
+	}
+	meta.InitiatorName = events[0].Data.UserName
+	meta.InitiatorID = events[0].Data.UserID
+	meta.InitiatorPubKey = events[0].PublicKey
+	meta.StartBlock = bkNums[0]
+	meta.Rules = rules
+	meta.VoteCounts = voteCounts
+	meta.TotalVotes = totalVotes
+
 	return
 }
 
@@ -426,9 +422,195 @@ func (iter *ChainIterator) Reset() {
 	iter.Index = -1
 }
 
+// ----- QueryHandler APIs -----
+
+func NewQueryHandler(iter *ChainIterator, pendingTxns []*Transaction, skip int) *QueryHandler {
+	return &QueryHandler{
+		iter:        iter,
+		pendingTxns: pendingTxns,
+		numSkip:     skip,
+	}
+}
+
+func (handler *QueryHandler) skip() (end bool) {
+	handler.iter.Reset()
+	if handler.numSkip == 0 {
+		return
+	}
+	skips := 1
+	for _, end = handler.iter.Next(); !end && skips != handler.numSkip; _, end = handler.iter.Next() {
+		skips++
+	}
+	return
+}
+
+// Count API returns the number of transactions that satisfy given condition
+func (handler *QueryHandler) Count(cond QueryCondition) (count uint) {
+	end := handler.skip() // necessary as there may be multiple query requests for a handler
+	for _, pdTxn := range handler.pendingTxns {
+		if cond(pdTxn) && pdTxn.Success() {
+			count++
+		}
+	}
+	if end {
+		return
+	}
+	for block, end := handler.iter.Next(); !end; block, end = handler.iter.Next() {
+		for _, pastTxn := range block.Txns {
+			if cond(pastTxn) && pastTxn.Success() {
+				count++
+			}
+		}
+	}
+	return
+}
+
+// CountByGroup API returns the number of transactions that satisfy given condition by group
+func (handler *QueryHandler) CountByGroup(cond QueryCondition, groupBy QueryGroupBy) (counts map[interface{}]uint) {
+	end := handler.skip() // necessary as there may be multiple query requests for a handler
+	for _, pdTxn := range handler.pendingTxns {
+		if cond(pdTxn) && pdTxn.Success() {
+			counts[groupBy(pdTxn)]++
+		}
+	}
+	if end {
+		return
+	}
+	for block, end := handler.iter.Next(); !end; block, end = handler.iter.Next() {
+		for _, pastTxn := range block.Txns {
+			if cond(pastTxn) && pastTxn.Success() {
+				counts[groupBy(pastTxn)]++
+			}
+		}
+	}
+	return
+}
+
+// Fetch API returns all transactions that satisfy given condition
+func (handler *QueryHandler) Fetch(cond QueryCondition) (txns []*Transaction) {
+	end := handler.skip()
+	for _, pdTxn := range handler.pendingTxns {
+		if cond(pdTxn) && pdTxn.Success() {
+			txns = append(txns, pdTxn)
+		}
+	}
+	if end {
+		return
+	}
+	for block, end := handler.iter.Next(); !end; block, end = handler.iter.Next() {
+		for _, pastTxn := range block.Txns {
+			if cond(pastTxn) && pastTxn.Success() {
+				txns = append(txns, pastTxn)
+			}
+		}
+	}
+	return
+}
+
+// FetchWithBlockNum API returns all transactions that satisfy given condition, along with corresponding block number
+func (handler *QueryHandler) FetchWithBlockNum(cond QueryCondition) (txns []*Transaction, bkNums []uint) {
+	nextBkNum := handler.NextBlockNum()
+	end := handler.skip()
+	for _, pdTxn := range handler.pendingTxns {
+		if cond(pdTxn) && pdTxn.Success() {
+			txns = append(txns, pdTxn)
+			bkNums = append(bkNums, nextBkNum)
+		}
+	}
+	if end {
+		return
+	}
+	for block, end := handler.iter.Next(); !end; block, end = handler.iter.Next() {
+		for _, pastTxn := range block.Txns {
+			if cond(pastTxn) && pastTxn.Success() {
+				txns = append(txns, pastTxn)
+				bkNums = append(bkNums, block.BlockNum)
+			}
+		}
+	}
+	return
+}
+
+func (handler *QueryHandler) CurrentBlockNum() uint {
+	handler.iter.Reset() // do not skip, only reset.
+	block, _ := handler.iter.Next()
+	return block.BlockNum
+}
+
+func (handler *QueryHandler) NextBlockNum() uint {
+	handler.iter.Reset() // do not skip, only reset.
+	block, _ := handler.iter.Next()
+	return block.BlockNum + 1
+}
+
+func (handler *QueryHandler) Status(txId []byte) (status TransactionStatus) {
+	end := handler.skip()
+	if end {
+		return TransactionStatus{-1, TransactionReceipt{}}
+	}
+	for block, end := handler.iter.Next(); !end; block, end = handler.iter.Next() {
+		for _, pastTxn := range block.Txns {
+			if bytes.Compare(pastTxn.ID, txId) == 0 {
+				return TransactionStatus{
+					Confirmed: handler.iter.Index,
+					Receipt:   pastTxn.Receipt,
+				}
+			}
+		}
+	}
+
+	return TransactionStatus{-1, TransactionReceipt{}}
+}
+
 // ----- Utility functions -----
 
 // DBKeyForBlock returns the database key for a given block hash by concatenating prefix and hash.
 func DBKeyForBlock(blockHash []byte) []byte {
 	return bytes.Join([][]byte{[]byte(BlockKeyPrefix), blockHash}, []byte{})
+}
+
+func logInvalidTxn(txn *Transaction) {
+	var msg string
+	switch txn.Receipt.Code {
+	case TxnStatusInvalidSignature:
+		msg = "invalid signature"
+		break
+	case TxnStatusInvalidPayloadMethod:
+		msg = "invalid payload method"
+		break
+	case TxnStatusInvalidPollID:
+		msg = "invalid poll ID"
+		break
+	case TxnStatusPollExpired:
+		msg = "poll is expired"
+		break
+	case TxnStatusAdminNotSet:
+		msg = "admins should be set if expired time is not set"
+		break
+	case TxnStatusInvalidVotesPerUser:
+		msg = "votes per user should be at least one"
+		break
+	case TxnStatusNotEnoughOptions:
+		msg = "not enough options"
+		break
+	case TxnStatusPollIDExist:
+		msg = "cannot launch a poll with an existing poll id."
+		break
+	case TxnStatusBannedUser:
+		msg = "user is not allowed to vote"
+		break
+	case TxnStatusInvalidOptions:
+		msg = "invalid options"
+		break
+	case TxnStatusNoVotes:
+		msg = "no votes remaining"
+		break
+	case TxnStatusPollAlreadyEnded:
+		msg = "poll is already ended"
+		break
+	case TxnStatusUnauthorizedUser:
+		msg = "unauthorized user"
+		break
+	}
+	log.Println(fmt.Sprintf("Invalid transaction %x: %s\n%v", txn.ID[:5], msg, txn.Data))
 }
