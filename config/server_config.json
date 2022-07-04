@@ -1,0 +1,4 @@
+{
+  "ServerHTTPIPPort": "127.0.0.1:8090",
+  "CoordIPPort": "127.0.0.1:22745"
+}
