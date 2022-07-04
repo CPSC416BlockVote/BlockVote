@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"reflect"
 	"sync"
 )
 
@@ -366,7 +367,7 @@ func (bc *BlockChain) VotingStatus(pollID string) (meta PollMeta) {
 	votesMap := queryHandler.CountByGroup(func(txn *Transaction) bool {
 		return txn.Data.Method == PayloadMethodVote && txn.Data.PollID == pollID
 	}, func(txn *Transaction) interface{} {
-		return txn.Data.Extra.(string)
+		return txn.Data.Extra.([]string)
 	})
 
 	// construct metadata
@@ -468,9 +469,18 @@ func (handler *QueryHandler) Count(cond QueryCondition) (count uint) {
 // CountByGroup API returns the number of transactions that satisfy given condition by group
 func (handler *QueryHandler) CountByGroup(cond QueryCondition, groupBy QueryGroupBy) (counts map[interface{}]uint) {
 	end := handler.skip() // necessary as there may be multiple query requests for a handler
+	counts = make(map[interface{}]uint)
+
 	for _, pdTxn := range handler.pendingTxns {
 		if cond(pdTxn) && pdTxn.Success() {
-			counts[groupBy(pdTxn)]++
+			group := reflect.ValueOf(groupBy(pdTxn))
+			if group.Kind() == reflect.Slice {
+				for i := 0; i < group.Len(); i++ {
+					counts[group.Index(i).Interface()]++
+				}
+			} else if !group.IsNil() {
+				counts[groupBy(pdTxn)]++
+			}
 		}
 	}
 	if end {
@@ -479,7 +489,14 @@ func (handler *QueryHandler) CountByGroup(cond QueryCondition, groupBy QueryGrou
 	for block, end := handler.iter.Next(); !end; block, end = handler.iter.Next() {
 		for _, pastTxn := range block.Txns {
 			if cond(pastTxn) && pastTxn.Success() {
-				counts[groupBy(pastTxn)]++
+				group := reflect.ValueOf(groupBy(pastTxn))
+				if group.Kind() == reflect.Slice {
+					for i := 0; i < group.Len(); i++ {
+						counts[group.Index(i).Interface()]++
+					}
+				} else if !group.IsNil() {
+					counts[groupBy(pastTxn)]++
+				}
 			}
 		}
 	}

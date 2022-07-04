@@ -161,7 +161,7 @@ func (p *Payload) ValidateVote(parent *Transaction, handler *QueryHandler) (stat
 
 	// 2. check if voted
 	if handler.Count(func(txn *Transaction) bool {
-		return bytes.Compare(txn.PublicKey, parent.PublicKey) == 0
+		return txn.Data.PollID == p.PollID && txn.Data.Method == PayloadMethodVote && bytes.Compare(txn.PublicKey, parent.PublicKey) == 0
 	}) > 0 {
 		return TxnStatusNoVotes
 	}
