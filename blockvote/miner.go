@@ -2,17 +2,15 @@ package blockvote
 
 import (
 	"bytes"
-	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	"cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/gossip"
 	"cs.ubc.ca/cpsc416/BlockVote/util"
+	"encoding/gob"
 	"errors"
-	"fmt"
 	"log"
 	"math"
 	"net/rpc"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,7 +52,6 @@ type DownloadArgs struct {
 type DownloadReply struct {
 	BlockChain [][]byte
 	LastHash   []byte
-	Candidates [][]byte
 	MemoryPool TxnPool
 	Peers      []gossip.Peer
 }
@@ -72,14 +69,22 @@ type QueryTxnArgs struct {
 }
 
 type QueryTxnReply struct {
-	NumConfirmed int
+	Status blockchain.TransactionStatus
 }
 
 type QueryResultsArgs struct {
+	PollID string
 }
 
 type QueryResultsReply struct {
-	Votes []uint
+	Results blockchain.PollMeta
+}
+
+type InvalidSignatureError struct {
+}
+
+func (e *InvalidSignatureError) Error() string {
+	return "invalid signature"
 }
 
 type Miner struct {
@@ -90,7 +95,6 @@ type Miner struct {
 	Info         NodeInfo
 	rtMu         sync.Mutex
 	ReceivedTxns map[string]bool
-	Candidates   []*Identity.Wallets
 	MemoryPool   TxnPool
 	MaxTxn       uint8
 
@@ -174,6 +178,8 @@ func (cc *CoordConnection) Close() {
 }
 
 func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn uint8) error {
+	gob.Register(blockchain.Rules{})
+
 	m.MaxTxn = maxTxn
 	m.Info.NodeID = minerId
 
@@ -196,7 +202,6 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 		reply := GetPeersReply{}
 		coordConn.Send("CoordAPIMiner.GetPeers", GetPeersArgs{}, &reply)
 		// 2.1.3 Download data from peers
-		var dlCandidates [][]byte
 		var dlBlockchain [][]byte
 		var dlLastHash []byte
 		var dlTxnPool TxnPool
@@ -211,7 +216,6 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 			log.Println("[INFO] Downloading initial system states from coord...")
 			reply := GetInitialStatesReply{}
 			coordConn.Send("CoordAPIMiner.GetInitialStates", GetInitialStatesArgs{}, &reply)
-			dlCandidates = reply.Candidates
 			dlBlockchain = reply.Blockchain
 			dlLastHash = reply.LastHash
 		} else {
@@ -234,7 +238,6 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 						i++
 						continue
 					}
-					dlCandidates = reply.Candidates
 					dlBlockchain = reply.BlockChain
 					dlLastHash = reply.LastHash
 					dlTxnPool = reply.MemoryPool
@@ -257,26 +260,21 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 			}
 		}
 		// 2.1.4 Set up local states
-		// 2.1.4.1 Setup candidates
-		m.InitCandidates(resume, dlCandidates)
-
-		// 2.1.4.2 Setup blockchain
+		// 2.1.4.1 Setup blockchain
 		m.InitBlockchain(resume, dlBlockchain, dlLastHash)
 
-		// 2.1.4.3 Setup txn pool (download from any of its peers)
+		// 2.1.4.2 Setup txn pool (download from any of its peers)
 		log.Println("[INFO] Setting up memory pool...")
 		m.MemoryPool = dlTxnPool
 		log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
 
-		// 2.1.4.4 Setup peers
+		// 2.1.4.3 Setup peers
 		peers = reply.Peers
 	} else {
 		// 2.2 Reload from disk
-		// 2.2.1 Reload candidates
-		m.InitCandidates(resume, nil)
-		// 2.2.2 Reload blockchain
+		// 2.2.1 Reload blockchain
 		m.InitBlockchain(resume, nil, nil)
-		// 2.2.3 Reload peers
+		// 2.2.2 Reload peers
 		values, err := m.Storage.GetAllWithPrefix(NodeKeyPrefix)
 		util.CheckErr(err, "[ERROR] error reloading node list")
 		for _, val := range values {
@@ -335,7 +333,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 
 		} else if count == 3 {
 			// print chain every 30 seconds
-			m.PrintChain()
+			//m.PrintChain()
 			count = 0
 		}
 	}
@@ -360,40 +358,15 @@ func (m *Miner) InitStorage() (resume bool) {
 	return resume
 }
 
-func (m *Miner) InitCandidates(resume bool, data [][]byte) {
-	if !resume {
-		log.Println("[INFO] Setting up candidates...")
-		var keys [][]byte
-		var values [][]byte
-		for i, cand := range data {
-			wallets := Identity.DecodeToWallets(cand)
-			m.Candidates = append(m.Candidates, wallets)
-			keys = append(keys, util.DBKeyWithPrefix(CandidateKeyPrefix, []byte(strconv.Itoa(i))))
-			values = append(values, wallets.Encode())
-		}
-		err := m.Storage.PutMulti(keys, values)
-		util.CheckErr(err, "[ERROR] error when saving candidates")
-	} else {
-		// resume
-		log.Println("[INFO] Reloading candidates...")
-		data, err := m.Storage.GetAllWithPrefix(CandidateKeyPrefix)
-		util.CheckErr(err, "[ERROR] error reloading candidates")
-		for _, val := range data {
-			cand := Identity.DecodeToWallets(val)
-			m.Candidates = append(m.Candidates, cand)
-		}
-	}
-}
-
 func (m *Miner) InitBlockchain(resume bool, chainData [][]byte, lastHash []byte) {
 	if !resume {
 		log.Println("[INFO] Setting up blockchain...")
-		m.Blockchain = blockchain.NewBlockChain(m.Storage, m.Candidates)
+		m.Blockchain = blockchain.NewBlockChain(m.Storage)
 		err := m.Blockchain.ResumeFromEncodedData(chainData, lastHash)
 		util.CheckErr(err, "[ERROR] error resuming blockchain")
 	} else {
 		log.Println("[INFO] Reloading blockchain...")
-		m.Blockchain = blockchain.NewBlockChain(m.Storage, m.Candidates)
+		m.Blockchain = blockchain.NewBlockChain(m.Storage)
 		err := m.Blockchain.ResumeFromDB()
 		util.CheckErr(err, "[ERROR] error reloading blockchain")
 	}
@@ -589,7 +562,7 @@ func (m *Miner) MiningService() {
 					// select txns from pool
 					selectedTxns := m.selectTxns()
 					// validate txns
-					valids := m.Blockchain.ValidateTxns(selectedTxns)
+					valids := m.Blockchain.ValidatePendingTxns(selectedTxns)
 					var validatedTxns []*blockchain.Transaction
 					var invalidTxid [][]byte
 					// only include valid txns
@@ -679,26 +652,27 @@ func (m *Miner) selectTxns() (selectedTxn []*blockchain.Transaction) {
 	return
 }
 
-func (m *Miner) PrintChain() {
-	votes, txns := m.Blockchain.VotingStatus()
-
-	log.Println("[INFO] Printing...")
-	fv, err := os.Create("./" + m.Info.NodeID + "votes.txt")
-	util.CheckErr(err, "Unable to create votes.txt")
-	defer fv.Close()
-	for idx, _ := range votes {
-		fv.WriteString(fmt.Sprintf("%s,%d\n", m.Candidates[idx].CandidateData.CandidateName, votes[idx]))
-	}
-	fv.Sync()
-	ft, err := os.Create("./" + m.Info.NodeID + "txns.txt")
-	util.CheckErr(err, "Unable to create txns.txt")
-	defer ft.Close()
-	for _, txn := range txns {
-		ft.WriteString(fmt.Sprintf("%x,%s,%s\n", txn.ID, txn.Data.VoterName, txn.Data.VoterCandidate))
-	}
-	ft.Sync()
-	log.Println("[INFO] Printed.")
-}
+// TODO: refactor print chain
+//func (m *Miner) PrintChain() {
+//	votes, txns := m.Blockchain.VotingStatus()
+//
+//	log.Println("[INFO] Printing...")
+//	fv, err := os.Create("./" + m.Info.NodeID + "votes.txt")
+//	util.CheckErr(err, "Unable to create votes.txt")
+//	defer fv.Close()
+//	for idx, _ := range votes {
+//		fv.WriteString(fmt.Sprintf("%s,%d\n", m.Candidates[idx].CandidateData.CandidateName, votes[idx]))
+//	}
+//	fv.Sync()
+//	ft, err := os.Create("./" + m.Info.NodeID + "txns.txt")
+//	util.CheckErr(err, "Unable to create txns.txt")
+//	defer ft.Close()
+//	for _, txn := range txns {
+//		ft.WriteString(fmt.Sprintf("%x,%s,%s\n", txn.ID, txn.Data.VoterName, txn.Data.VoterCandidate))
+//	}
+//	ft.Sync()
+//	log.Println("[INFO] Printed.")
+//}
 
 // ----- APIs
 
@@ -716,20 +690,16 @@ func (m *Miner) ReceiveTxn(txn *blockchain.Transaction) bool {
 	}
 }
 
-func (m *Miner) CheckTxn(txID []byte) int {
+func (m *Miner) CheckTxnStatus(txID []byte) blockchain.TransactionStatus {
 	return m.Blockchain.TxnStatus(txID)
 }
 
-func (m *Miner) CheckResults() []uint {
-	votes, _ := m.Blockchain.VotingStatus()
-	return votes
+func (m *Miner) CheckResults(pollID string) blockchain.PollMeta {
+	return m.Blockchain.VotingStatus(pollID)
 }
 
-func (m *Miner) Download() (encodedBlockchain [][]byte, lastHash []byte, candidates [][]byte, txnPool TxnPool, peers []gossip.Peer) {
+func (m *Miner) Download() (encodedBlockchain [][]byte, lastHash []byte, txnPool TxnPool, peers []gossip.Peer) {
 	// prepare reply data
-	for _, cand := range m.Candidates {
-		candidates = append(candidates, cand.Encode())
-	}
 	m.mu.Lock() // lock ensures that blockchain data and memory pool are from the same moment
 	encodedBlockchain, lastHash = m.Blockchain.Encode()
 	txnPool = m.MemoryPool
@@ -741,9 +711,9 @@ func (m *Miner) Download() (encodedBlockchain [][]byte, lastHash []byte, candida
 
 type EntryPoint interface {
 	ReceiveTxn(*blockchain.Transaction) bool
-	CheckTxn([]byte) int
-	CheckResults() []uint
-	Download() ([][]byte, []byte, [][]byte, TxnPool, []gossip.Peer)
+	CheckTxnStatus([]byte) blockchain.TransactionStatus
+	CheckResults(string) blockchain.PollMeta
+	Download() ([][]byte, []byte, TxnPool, []gossip.Peer)
 }
 
 type EntryPointAPI struct {
@@ -751,11 +721,10 @@ type EntryPointAPI struct {
 }
 
 func (api *EntryPointAPI) Download(args DownloadArgs, reply *DownloadReply) error {
-	bc, lh, cands, pool, peers := api.e.Download()
+	bc, lh, pool, peers := api.e.Download()
 	*reply = DownloadReply{
 		BlockChain: bc,
 		LastHash:   lh,
-		Candidates: cands,
 		MemoryPool: pool,
 		Peers:      peers,
 	}
@@ -764,18 +733,22 @@ func (api *EntryPointAPI) Download(args DownloadArgs, reply *DownloadReply) erro
 
 // SubmitTxn is for client to submit a transaction. This function is non-blocking.
 func (api *EntryPointAPI) SubmitTxn(args SubmitTxnArgs, reply *SubmitTxnReply) error {
+	// check signature first, directly reject txn with invalid signature
+	if !args.Txn.Verify() {
+		return &InvalidSignatureError{}
+	}
 	*reply = SubmitTxnReply{Exist: api.e.ReceiveTxn(&args.Txn)}
 	return nil
 }
 
 // QueryTxn queries a transaction in the system and returns the number of blocks that confirm it.
 func (api *EntryPointAPI) QueryTxn(args QueryTxnArgs, reply *QueryTxnReply) error {
-	*reply = QueryTxnReply{NumConfirmed: api.e.CheckTxn(args.TxID)}
+	*reply = QueryTxnReply{Status: api.e.CheckTxnStatus(args.TxID)}
 	return nil
 }
 
-func (api *EntryPointAPI) QueryResults(_ QueryResultsArgs, reply *QueryResultsReply) error {
-	votes := api.e.CheckResults()
-	*reply = QueryResultsReply{Votes: votes}
+func (api *EntryPointAPI) QueryResults(args QueryResultsArgs, reply *QueryResultsReply) error {
+	pollMeta := api.e.CheckResults(args.PollID)
+	*reply = QueryResultsReply{Results: pollMeta}
 	return nil
 }

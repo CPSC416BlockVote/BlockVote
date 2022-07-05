@@ -1,8 +1,7 @@
 package evlib
 
 import (
-	"bufio"
-	wallet "cs.ubc.ca/cpsc416/BlockVote/Identity"
+	"cs.ubc.ca/cpsc416/BlockVote/Identity"
 	blockChain "cs.ubc.ca/cpsc416/BlockVote/blockchain"
 	"cs.ubc.ca/cpsc416/BlockVote/blockvote"
 	"errors"
@@ -11,9 +10,7 @@ import (
 	"log"
 	"math/rand"
 	"net/rpc"
-	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -26,22 +23,17 @@ type TxnInfo struct {
 
 type EV struct {
 	// Add EV instance state here.
-	rw     sync.RWMutex // mutex for arrays
-	connRw sync.RWMutex // mutex for connections
-	ifRw   sync.RWMutex // mutex for info
-	//voterWallet      wallet.Wallets
-	//voterWalletAddr  string
+	rw               sync.RWMutex // mutex for arrays
+	connRw           sync.RWMutex // mutex for connections
+	ifRw             sync.RWMutex // mutex for info
 	CandidateList    []string
 	minerIpPort      string
 	coordIPPort      string
 	localMinerIPPort string
 	localCoordIPPort string
 	coordClient      *rpc.Client
-	//minerClient      *rpc.Client
-	//VoterTxnInfoMap map[string]TxnInfo
-	//VoterTxnMap     map[string]blockChain.Transaction
-	TxnInfos      []TxnInfo
-	MinerAddrList []string
+	TxnInfos         []TxnInfo
+	MinerAddrList    []string
 
 	ComplainCoordChan chan int // for all operations to complain about coord unavailability
 	ComplainMinerChan chan int // for all operations to complain about no miner available
@@ -55,16 +47,16 @@ func NewEV() *EV {
 }
 
 // ----- evlib APIs -----
-type VoterNameID struct {
-	Name            string
-	ID              string
-	voterWallet     wallet.Wallets
-	voterWalletAddr string
-}
+
+const (
+	SubmitRetry       = 3
+	ConnectionTimeOut = 10 * time.Second
+	CheckTxnRetry     = 0
+	CheckTxnWait      = 2 * time.Minute
+	CheckPollRetry    = 0
+)
 
 var quit chan bool
-var voterInfo []VoterNameID
-var thread = 35 * time.Second
 
 func (d *EV) connectCoord() {
 	// setup conn to coord
@@ -76,54 +68,51 @@ func (d *EV) connectCoord() {
 	d.coordClient = client
 }
 
-func (d *EV) connectMiner() (conn *rpc.Client) {
+func (d *EV) connectMiner() (conn *rpc.Client, err error) {
 	// setup conn to miner
-	for {
+	start := time.Now() // start timer
+	for time.Since(start) < ConnectionTimeOut {
 		d.rw.RLock()
-		minerList := d.MinerAddrList[:] // make a copy
+		minerList := make([]string, len(d.MinerAddrList))
+		copy(minerList, d.MinerAddrList) // make a copy
 		d.rw.RUnlock()
 		if len(minerList) > 0 {
 			// randomly select a miner
 			minerIpPort := minerList[rand.New(rand.NewSource(time.Now().UnixNano())).Intn(len(minerList))]
 			// connect to it
-			rpcClient, err := rpc.Dial("tcp", minerIpPort)
+			conn, err = rpc.Dial("tcp", minerIpPort)
 			if err != nil {
 				// remove failed miner
 				d.rw.Lock()
 				d.MinerAddrList = sliceMinerList(minerIpPort, d.MinerAddrList)
 				d.rw.Unlock()
 			} else {
-				conn = rpcClient
 				return
 			}
 		} else {
 			// no available miners, retrieve latest list from coord
-			log.Println("[WARN] No miner available. Please wait...")
+			//log.Println("[WARN] No miner available. Please wait...")
 			d.ComplainMinerChan <- 1
 			time.Sleep(time.Second)
 		}
 	}
+
+	if err != nil {
+		// connection error
+		return
+	} else {
+		// no available miner error
+		return nil, errors.New("no available miner")
+	}
 }
 
 // Start Starts the instance of EV to use for connecting to the system with the given coord's IP:port.
-func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort string) error {
-	voterInfo = make([]VoterNameID, 0)
-	d.coordIPPort = coordIPPort
+func (d *EV) Start(localTracer *tracing.Tracer, coordIPPort string) error {
+	rand.Seed(time.Now().Unix())
 
 	// setup conn to coord
+	d.coordIPPort = coordIPPort
 	d.connectCoord()
-
-	// get candidates from Coord
-	log.Println("[INFO] Retrieving candidates from coord...")
-	var candidatesReply *blockvote.GetCandidatesReply
-	for {
-		err := d.coordClient.Call("CoordAPIClient.GetCandidates", blockvote.GetCandidatesArgs{}, &candidatesReply)
-		if err == nil {
-			break
-		} else {
-			d.connectCoord()
-		}
-	}
 
 	log.Println("[INFO] Retrieving miner list from coord...")
 	// no need to retry when failed.
@@ -133,59 +122,14 @@ func (d *EV) Start(localTracer *tracing.Tracer, clientId uint, coordIPPort strin
 		d.MinerAddrList = minerListReply.MinerAddrList
 	}
 
-	// print all candidates Name
-	canadiateName := make([]string, 0)
-	for _, cand := range candidatesReply.Candidates {
-		wallets := wallet.DecodeToWallets(cand)
-		canadiateName = append(canadiateName, wallets.CandidateData.CandidateName)
-	}
-	d.CandidateList = canadiateName
-	log.Println("List of candidate:", canadiateName)
-
 	// Start internal services
 	go d.CoordConnManager()
 	go d.MinerListManager()
 
-	quit = make(chan bool)
-	go func() {
-		for {
-			d.rw.RLock()
-			allTxns := d.TxnInfos[:]
-			d.rw.RUnlock()
-
-			for idx, txnInfo := range allTxns {
-				if !txnInfo.confirmed && time.Now().Sub(txnInfo.submitTime) > thread {
-					// start query status
-					var submitTxnReply *blockvote.SubmitTxnReply
-					conn := d.connectMiner()
-					err = conn.Call("EntryPointAPI.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txnInfo.txn}, &submitTxnReply)
-					_ = conn.Close()
-					if err == nil {
-						if submitTxnReply.Exist {
-							d.rw.Lock()
-							d.TxnInfos[idx].confirmed = true // we can do this b.c. TxnInfos is append only
-							d.rw.Unlock()
-						} else {
-							//log.Printf("[INFO] Resubmitting %x", txnInfo.txn.ID)
-							//d.submitTxn(txnInfo.txn)
-							d.rw.Lock()
-							d.TxnInfos[idx].submitTime = time.Now() // we can do this b.c. TxnInfos is append only
-							d.rw.Unlock()
-						}
-					}
-				}
-			}
-
-			select {
-			case <-quit:
-				// end
-				return
-			default:
-				// Do other stuff
-				time.Sleep(10 * time.Second)
-			}
-		}
-	}()
+	// Wait for interrupt signal to exit
+	//sigs := make(chan os.Signal, 1)
+	//signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	//<-sigs
 	return nil
 }
 
@@ -255,18 +199,6 @@ func (d *EV) MinerListManager() {
 	}
 }
 
-// helper function for checking the existence of voter
-func (d *EV) findVoterExist(from, to string) bool {
-	d.ifRw.RLock()
-	defer d.ifRw.RUnlock()
-	for _, v := range voterInfo {
-		if v.Name == from && v.ID == to {
-			return true
-		}
-	}
-	return false
-}
-
 // helper function for remove minerList
 func sliceMinerList(mAddr string, minerList []string) []string {
 	for i, v := range minerList {
@@ -278,110 +210,150 @@ func sliceMinerList(mAddr string, minerList []string) []string {
 	return minerList
 }
 
-// Vote API provides the functionality of voting
-func (d *EV) Vote(ballot blockChain.Ballot) []byte {
-	// create wallet for voter, only when such voter is not exist
-	if !d.findVoterExist(ballot.VoterName, ballot.VoterStudentID) {
-		d.ifRw.Lock()
-		voterWallet, addr := d.createVoterWallet(ballot)
-		voterInfo = append(voterInfo, VoterNameID{
-			Name:            ballot.VoterName,
-			ID:              ballot.VoterStudentID,
-			voterWallet:     *voterWallet,
-			voterWalletAddr: addr,
-		})
-		d.ifRw.Unlock()
-		//log.Println(voterInfo)
+func (d *EV) LaunchPoll(signer *Identity.Signer, pollID string, rules blockChain.Rules) ([]byte, error) {
+	payload := blockChain.Payload{
+		Method:   blockChain.PayLoadMethodLaunch,
+		UserName: signer.Name,
+		UserID:   signer.ID,
+		PollID:   pollID,
+		Extra:    rules,
 	}
+	return d.initiateTransaction(signer, &payload)
+}
 
-	// create transaction
-	txn, err := d.createTransaction(ballot)
+func (d *EV) CastVote(signer *Identity.Signer, pollID string, options []string) ([]byte, error) {
+	payload := blockChain.Payload{
+		Method:   blockChain.PayloadMethodVote,
+		UserName: signer.Name,
+		UserID:   signer.ID,
+		PollID:   pollID,
+		Extra:    options,
+	}
+	return d.initiateTransaction(signer, &payload)
+}
+
+func (d *EV) TerminatePoll(signer *Identity.Signer, pollID string) ([]byte, error) {
+	payload := blockChain.Payload{
+		Method:   blockChain.PayloadMethodTerminate,
+		UserName: signer.Name,
+		UserID:   signer.ID,
+		PollID:   pollID,
+		Extra:    nil,
+	}
+	return d.initiateTransaction(signer, &payload)
+}
+
+func (d *EV) initiateTransaction(signer *Identity.Signer, payload *blockChain.Payload) ([]byte, error) {
+	// create and sign transaction
+	txn := blockChain.NewTransaction(payload, rand.Uint32(), signer.PublicKey)
+	txn.Sign(signer.PrivateKey)
+
+	// submit transaction
+	err := d.submitTxn(txn)
 	if err != nil {
-		log.Panic(err)
+		log.Println(fmt.Sprintf("[ERROR] Unable to submit transaction %x: %s",
+			txn.ID[:5], err.Error()))
+	} else {
+		log.Println(fmt.Sprintf("[INFO] Transaction %x submitted.",
+			txn.ID[:5]))
 	}
-
-	var submitTxnReply *blockvote.SubmitTxnReply
-	for {
-		// connect to miner
-		conn := d.connectMiner()
-		err := conn.Call("EntryPointAPI.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
-		conn.Close()
-		if err == nil {
-			d.rw.Lock()
-			d.TxnInfos = append(d.TxnInfos, TxnInfo{
-				txn:        txn,
-				submitTime: time.Now(),
-				confirmed:  false,
-			})
-			d.rw.Unlock()
-			break
-		} else {
-			log.Println("[WARN] Fail in SubmitTxn, retrying...")
-		}
-	}
-	return txn.ID
+	return txn.ID, err
 }
 
-func (d *EV) submitTxn(txn blockChain.Transaction) {
-
+func (d *EV) submitTxn(txn *blockChain.Transaction) error {
 	var submitTxnReply *blockvote.SubmitTxnReply
-	for {
+	var err error
+	var conn *rpc.Client
+	for retry := 0; retry < SubmitRetry; retry++ {
 		// setup conn to miner
-		conn := d.connectMiner()
-		err := conn.Call("EntryPointAPI.SubmitTxn", blockvote.SubmitTxnArgs{Txn: txn}, &submitTxnReply)
-		conn.Close()
-		if err == nil {
-			break
-		} else {
-			log.Println("[WARN] Fail in SubmitTxn, retrying...")
+		conn, err = d.connectMiner()
+		if err != nil {
+			log.Println(fmt.Sprintf("[WARN] Transaction %x failed to submit: %s (attempt %d of %d)",
+				txn.ID[:5], err.Error(), retry+1, SubmitRetry))
+			continue
 		}
+		err = conn.Call("EntryPointAPI.SubmitTxn", blockvote.SubmitTxnArgs{Txn: *txn}, &submitTxnReply)
+		conn.Close()
+		if err != nil {
+			if _, ok := err.(*blockvote.InvalidSignatureError); !ok {
+				log.Println(fmt.Sprintf("[WARN] Transaction %x failed to submit: %s (attempt %d of %d)",
+					txn.ID[:5], err.Error(), retry+1, SubmitRetry))
+				continue
+			}
+		}
+		return err // this can pass the invalid signature error back to caller
 	}
+	return err
 }
 
-// GetBallotStatus API checks the status of a transaction and returns the number of blocks that confirm it
-func (d *EV) GetBallotStatus(TxID []byte) (int, error) {
-	//retry := 0
+// CheckTxnStatus API checks the status of a transaction and returns the number of blocks that confirm it
+func (d *EV) CheckTxnStatus(TxID []byte) (blockChain.TransactionStatus, error) {
+	start := time.Now()
+
+	var err error
+	var conn *rpc.Client
 	var queryTxnReply *blockvote.QueryTxnReply
-	for {
-		conn := d.connectMiner()
-		err := conn.Call("EntryPointAPI.QueryTxn", blockvote.QueryTxnArgs{
+
+	for retry := 0; retry < CheckTxnRetry && time.Since(start) < CheckTxnWait; retry++ {
+		conn, err = d.connectMiner()
+		if err != nil {
+			continue
+		}
+
+		err = conn.Call("EntryPointAPI.QueryTxn", blockvote.QueryTxnArgs{
 			TxID: TxID,
 		}, &queryTxnReply)
+
+		if err != nil {
+			_ = conn.Close()
+			continue
+		}
+
+		// success
+		for queryTxnReply.Status.Confirmed == -1 && time.Since(start) < CheckTxnWait && err == nil {
+			// check again if it is still not confirmed
+			time.Sleep(5 * time.Second)
+			err = conn.Call("EntryPointAPI.QueryTxn", blockvote.QueryTxnArgs{
+				TxID: TxID,
+			}, &queryTxnReply)
+		}
 		_ = conn.Close()
-		if err == nil {
-			break
+		if err != nil {
+			continue
 		} else {
-			time.Sleep(2 * time.Second)
+			// either txn is confirmed, or not confirmed but time limit reached, so just return result
+			return queryTxnReply.Status, nil
 		}
 	}
-	return queryTxnReply.NumConfirmed, nil
+
+	// failure
+	return blockChain.TransactionStatus{}, err // pass whatever error back to caller
 }
 
-// GetCandVotes API retrieve the number of votes a candidate has.
-func (d *EV) GetCandVotes(candidate string) (uint, error) {
-	if len(d.CandidateList) == 0 {
-		return 0, errors.New("Empty Candidates.\n")
-	}
+// CheckPollStatus API retrieve the number of votes a candidate has.
+func (d *EV) CheckPollStatus(pollID string) (blockChain.PollMeta, error) {
 	var queryResultReply *blockvote.QueryResultsReply
-	for {
-		conn := d.connectMiner()
-		err := conn.Call("EntryPointAPI.QueryResults", blockvote.QueryResultsArgs{}, &queryResultReply)
-		_ = conn.Close()
-		if err == nil {
-			break
-		} else {
-			time.Sleep(2 * time.Second)
+	var err error
+	var conn *rpc.Client
+	for retry := 0; retry < CheckPollRetry; retry++ {
+		conn, err = d.connectMiner()
+		if err != nil {
+			continue
 		}
+
+		err = conn.Call("EntryPointAPI.QueryResults",
+			blockvote.QueryResultsArgs{PollID: pollID}, &queryResultReply)
+		_ = conn.Close()
+		if err != nil {
+			continue
+		}
+
+		// success
+		return queryResultReply.Results, nil
 	}
 
-	idx := 0
-	//fmt.Println(queryResultReply)
-	for i, cand := range d.CandidateList {
-		if cand == candidate {
-			idx = i
-		}
-	}
-	return queryResultReply.Votes[idx], nil
+	// failure
+	return blockChain.PollMeta{}, err // pass whatever error back to caller
 }
 
 // Stop Stops the EV instance.
@@ -413,72 +385,43 @@ func (d *EV) Stop() {
 
 // ----- evlib utility functions -----
 
-func createBallot() blockChain.Ballot {
-	// enter ballot
-	reader := bufio.NewReader(os.Stdin)
-	fmt.Print("Enter your name: ")
-	voterName, _ := reader.ReadString('\n')
+//func createBallot() blockChain.Ballot {
+//	// enter ballot
+//	reader := bufio.NewReader(os.Stdin)
+//	fmt.Print("Enter your name: ")
+//	voterName, _ := reader.ReadString('\n')
+//
+//	reader = bufio.NewReader(os.Stdin)
+//	fmt.Print("Enter your studentID: ")
+//	voterId, _ := reader.ReadString('\n')
+//	// ^[0-9]{8}
+//	isIDValid := false
+//	candidateName := ""
+//	for !isIDValid {
+//		reader = bufio.NewReader(os.Stdin)
+//		fmt.Print("Vote your vote Candidate: ")
+//		candidateName, _ = reader.ReadString('\n')
+//	}
+//
+//	ballot := blockChain.Ballot{
+//		strings.TrimRight(voterName, "\r\n"),
+//		strings.TrimRight(voterId, "\r\n"),
+//		strings.TrimRight(candidateName, "\r\n"),
+//	}
+//	return ballot
+//}
 
-	reader = bufio.NewReader(os.Stdin)
-	fmt.Print("Enter your studentID: ")
-	voterId, _ := reader.ReadString('\n')
-	// ^[0-9]{8}
-	isIDValid := false
-	candidateName := ""
-	for !isIDValid {
-		reader = bufio.NewReader(os.Stdin)
-		fmt.Print("Vote your vote Candidate: ")
-		candidateName, _ = reader.ReadString('\n')
-	}
-
-	ballot := blockChain.Ballot{
-		strings.TrimRight(voterName, "\r\n"),
-		strings.TrimRight(voterId, "\r\n"),
-		strings.TrimRight(candidateName, "\r\n"),
-	}
-	return ballot
-}
-
-func (d *EV) createVoterWallet(ballot blockChain.Ballot) (*wallet.Wallets, string) {
-	v, err := wallet.CreateVoter(ballot.VoterName, ballot.VoterStudentID)
-	if err != nil {
-		log.Panic(err)
-	}
-	voterWallet := v
-	addr := voterWallet.AddWallet()
-	//d.voterWalletAddr = addr
-	voterWallet.SaveFile()
-	return voterWallet, addr
-}
-func (d *EV) findWalletAndAddr(ballot blockChain.Ballot) (wallet.Wallets, string) {
-	d.ifRw.RLock()
-	defer d.ifRw.RUnlock()
-
-	for _, val := range voterInfo {
-		if val.ID == ballot.VoterStudentID && val.Name == ballot.VoterName {
-			return val.voterWallet, val.voterWalletAddr
-		}
-	}
-	return wallet.Wallets{}, ""
-}
-
-func (d *EV) createTransaction(ballot blockChain.Ballot) (blockChain.Transaction, error) {
-	voterWallet, voterWalletAddr := d.findWalletAndAddr(ballot)
-	if voterWalletAddr == "" {
-		return blockChain.Transaction{}, errors.New("Not such a voter exists.\n")
-	}
-
-	txn := blockChain.Transaction{
-		Data:      &ballot,
-		ID:        nil,
-		Signature: nil,
-		PublicKey: voterWallet.Wallets[voterWalletAddr].PublicKey,
-	}
-	txn.ID = txn.Hash()
-	// client sign with private key
-	txn.Sign(voterWallet.Wallets[voterWalletAddr].PrivateKey)
-	return txn, nil
-}
+//func (d *EV) createTransaction(ballot blockChain.Ballot) (*blockChain.Transaction, error) {
+//	VoterWallet, VoterWalletAddr := d.findWalletAndAddr(ballot)
+//	if VoterWalletAddr == "" {
+//		return blockChain.Transaction{}, errors.New("Not such a voter exists.\n")
+//	}
+//
+//	txn := blockChain.NewTransaction(&ballot, VoterWallet.Wallets[VoterWalletAddr].PublicKey)
+//	// client sign with private key
+//	txn.Sign(VoterWallet.Wallets[VoterWalletAddr].PrivateKey)
+//	return txn, nil
+//}
 
 //Client - Coord Interaction
 //Clients need to contact coord before they issue transactions

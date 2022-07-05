@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"math"
 	"math/big"
@@ -106,12 +107,12 @@ func (pow *ProofOfWork) HashTxns() []byte {
 }
 
 func EncodeTxn(tx *Transaction) []byte {
-	str := tx.Data.VoterCandidate + tx.Data.VoterName + tx.Data.VoterStudentID
+	str := fmt.Sprintf("%v", tx.Data) // TODO: sanity check
 	data := bytes.Join(
 		[][]byte{
 			[]byte(str),
-			tx.Signature,
 			tx.ID,
+			tx.Signature,
 			tx.PublicKey,
 		}, []byte{},
 	)
