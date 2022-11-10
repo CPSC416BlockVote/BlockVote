@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/stretchr/testify/suite"
 	"testing"
+	"time"
 )
 
 type BlockchainTestSuite struct {
@@ -22,12 +23,7 @@ func TestBlockchainTestSuite(t *testing.T) {
 }
 
 func (s *BlockchainTestSuite) SetupTest() {
-	s.storage = new(util.Database)
-	err := s.storage.New("", true)
-	s.Require().Nil(err)
-	s.blockchain = NewBlockChain(s.storage)
-	err = s.blockchain.Init()
-	s.Require().Nil(err)
+	s.resetBlockchain()
 	copy(s.admins[:], s.getSigners(2))
 	copy(s.voters[:], s.getSigners(5))
 	copy(s.cands[:], s.getSigners(3))
@@ -35,6 +31,191 @@ func (s *BlockchainTestSuite) SetupTest() {
 
 func (s *BlockchainTestSuite) TearDownTest() {
 	s.storage.Close()
+}
+
+func (s *BlockchainTestSuite) TestAdjustDifficulty() {
+	for _, t := range []struct {
+		Name string
+		F    func()
+	}{
+		{"Adjust difficulty at expected interval", func() {
+			s.resetBlockchain()
+			initialDifficulty := s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty
+			s.mockAddBlock(&Block{
+				BlockNum:   1,
+				Difficulty: initialDifficulty,
+				Hash:       []byte{byte(1)},
+				MinerID:    "test",
+				Nonce:      0,
+				PrevHash:   s.blockchain.GetLastHash(),
+				Timestamp:  time.Now().Unix(),
+				Txns:       nil,
+			})
+
+			for i := 0; i < DifficultyAdjustInterval; i++ {
+				height := 2 + i
+				timestamp := s.blockchain.Get(s.blockchain.GetLastHash()).Timestamp + int64(ExpectedMiningSpeedSeconds*2) // double the time
+				difficulty := s.blockchain.AdjustDifficulty(s.blockchain.GetLastHash(),
+					s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty, timestamp, uint(height))
+				s.mockAddBlock(&Block{
+					BlockNum:   uint(height),
+					Difficulty: difficulty,
+					Hash:       []byte{byte(height)},
+					MinerID:    "test",
+					Nonce:      0,
+					PrevHash:   s.blockchain.GetLastHash(),
+					Timestamp:  timestamp,
+					Txns:       nil,
+				})
+				if i == DifficultyAdjustInterval-1 {
+					s.NotEqual(initialDifficulty, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				} else {
+					s.Equal(initialDifficulty, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				}
+			}
+
+			adjustedDifficulty := s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty
+			for i := 0; i < DifficultyAdjustInterval; i++ {
+				height := 2 + DifficultyAdjustInterval + i
+				timestamp := s.blockchain.Get(s.blockchain.GetLastHash()).Timestamp + int64(ExpectedMiningSpeedSeconds/2) // half the time
+				difficulty := s.blockchain.AdjustDifficulty(s.blockchain.GetLastHash(),
+					s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty, timestamp, uint(height))
+				s.mockAddBlock(&Block{
+					BlockNum:   uint(height),
+					Difficulty: difficulty,
+					Hash:       []byte{byte(height)},
+					MinerID:    "test",
+					Nonce:      0,
+					PrevHash:   s.blockchain.GetLastHash(),
+					Timestamp:  timestamp,
+					Txns:       nil,
+				})
+				if i == DifficultyAdjustInterval-1 {
+					s.NotEqual(adjustedDifficulty, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				} else {
+					s.Equal(adjustedDifficulty, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				}
+			}
+		}},
+		{"Adjust difficulty correctly", func() {
+			s.resetBlockchain()
+			initialDifficulty := s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty
+			s.mockAddBlock(&Block{
+				BlockNum:   1,
+				Difficulty: initialDifficulty,
+				Hash:       []byte{byte(1)},
+				MinerID:    "test",
+				Nonce:      0,
+				PrevHash:   s.blockchain.GetLastHash(),
+				Timestamp:  time.Now().Unix(),
+				Txns:       nil,
+			})
+
+			for i := 0; i < DifficultyAdjustInterval; i++ {
+				height := 2 + i
+				timestamp := s.blockchain.Get(s.blockchain.GetLastHash()).Timestamp + int64(ExpectedMiningSpeedSeconds*2) // double the time
+				difficulty := s.blockchain.AdjustDifficulty(s.blockchain.GetLastHash(),
+					s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty, timestamp, uint(height))
+				s.mockAddBlock(&Block{
+					BlockNum:   uint(height),
+					Difficulty: difficulty,
+					Hash:       []byte{byte(height)},
+					MinerID:    "test",
+					Nonce:      0,
+					PrevHash:   s.blockchain.GetLastHash(),
+					Timestamp:  timestamp,
+					Txns:       nil,
+				})
+				if i == DifficultyAdjustInterval-1 {
+					s.Equal(initialDifficulty/2, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				} else {
+					s.Equal(initialDifficulty, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				}
+			}
+
+			for i := 0; i < DifficultyAdjustInterval; i++ {
+				height := 2 + DifficultyAdjustInterval + i
+				timestamp := s.blockchain.Get(s.blockchain.GetLastHash()).Timestamp + int64(ExpectedMiningSpeedSeconds/2) // half the time
+				difficulty := s.blockchain.AdjustDifficulty(s.blockchain.GetLastHash(),
+					s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty, timestamp, uint(height))
+				s.mockAddBlock(&Block{
+					BlockNum:   uint(height),
+					Difficulty: difficulty,
+					Hash:       []byte{byte(height)},
+					MinerID:    "test",
+					Nonce:      0,
+					PrevHash:   s.blockchain.GetLastHash(),
+					Timestamp:  timestamp,
+					Txns:       nil,
+				})
+				if i == DifficultyAdjustInterval-1 {
+					s.Equal(initialDifficulty, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				} else {
+					s.Equal(initialDifficulty/2, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				}
+			}
+		}},
+		{"Adjust difficulty bounded max adjust factor", func() {
+			s.resetBlockchain()
+			initialDifficulty := s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty
+			s.mockAddBlock(&Block{
+				BlockNum:   1,
+				Difficulty: initialDifficulty,
+				Hash:       []byte{byte(1)},
+				MinerID:    "test",
+				Nonce:      0,
+				PrevHash:   s.blockchain.GetLastHash(),
+				Timestamp:  time.Now().Unix(),
+				Txns:       nil,
+			})
+
+			for i := 0; i < DifficultyAdjustInterval; i++ {
+				height := 2 + i
+				timestamp := s.blockchain.Get(s.blockchain.GetLastHash()).Timestamp + int64(ExpectedMiningSpeedSeconds*(MaxDifficultyAdjustFactor+1))
+				difficulty := s.blockchain.AdjustDifficulty(s.blockchain.GetLastHash(),
+					s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty, timestamp, uint(height))
+				s.mockAddBlock(&Block{
+					BlockNum:   uint(height),
+					Difficulty: difficulty,
+					Hash:       []byte{byte(height)},
+					MinerID:    "test",
+					Nonce:      0,
+					PrevHash:   s.blockchain.GetLastHash(),
+					Timestamp:  timestamp,
+					Txns:       nil,
+				})
+				if i == DifficultyAdjustInterval-1 {
+					s.Equal(initialDifficulty/MaxDifficultyAdjustFactor, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				} else {
+					s.Equal(initialDifficulty, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				}
+			}
+
+			for i := 0; i < DifficultyAdjustInterval; i++ {
+				height := 2 + DifficultyAdjustInterval + i
+				timestamp := s.blockchain.Get(s.blockchain.GetLastHash()).Timestamp + int64(1)
+				difficulty := s.blockchain.AdjustDifficulty(s.blockchain.GetLastHash(),
+					s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty, timestamp, uint(height))
+				s.mockAddBlock(&Block{
+					BlockNum:   uint(height),
+					Difficulty: difficulty,
+					Hash:       []byte{byte(height)},
+					MinerID:    "test",
+					Nonce:      0,
+					PrevHash:   s.blockchain.GetLastHash(),
+					Timestamp:  timestamp,
+					Txns:       nil,
+				})
+				if i == DifficultyAdjustInterval-1 {
+					s.Equal(initialDifficulty, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				} else {
+					s.Equal(initialDifficulty/MaxDifficultyAdjustFactor, s.blockchain.Get(s.blockchain.GetLastHash()).Difficulty)
+				}
+			}
+		}},
+	} {
+		s.Run(t.Name, t.F)
+	}
 }
 
 func (s *BlockchainTestSuite) TestTxnStatus() {
@@ -56,7 +237,7 @@ func (s *BlockchainTestSuite) TestTxnStatus() {
 			txn := NewTransaction(&Payload{}, 0, s.voters[0].PublicKey)
 			txn.Sign(s.voters[0].PrivateKey)
 
-			s.mine([]*Transaction{txn})
+			s.mockMine([]*Transaction{txn})
 			TxnStatus := s.blockchain.TxnStatus(txn.ID)
 
 			s.Equal(TransactionStatus{
@@ -73,9 +254,9 @@ func (s *BlockchainTestSuite) TestTxnStatus() {
 			txn := NewTransaction(&Payload{}, 0, s.voters[0].PublicKey)
 			txn.Sign(s.voters[0].PrivateKey)
 
-			s.mine([]*Transaction{txn})
+			s.mockMine([]*Transaction{txn})
 			for i := 0; i < NumConfirmed; i++ {
-				s.mine(nil)
+				s.mockMine(nil)
 			}
 			TxnStatus := s.blockchain.TxnStatus(txn.ID)
 
@@ -119,7 +300,7 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 			}, 0, s.admins[0].PublicKey)
 			txn.Sign(s.admins[0].PrivateKey)
 
-			s.mine([]*Transaction{txn})
+			s.mockMine([]*Transaction{txn})
 			meta := s.blockchain.VotingStatus("TestUncommittedPoll")
 			s.Equal(PollMeta{}, meta)
 		}},
@@ -139,10 +320,10 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 			}, 0, s.admins[0].PublicKey)
 			txn.Sign(s.admins[0].PrivateKey)
 
-			s.mine([]*Transaction{txn})
+			s.mockMine([]*Transaction{txn})
 			startBlock := s.blockchain.Get(s.blockchain.GetLastHash()).BlockNum
 			for i := 0; i < NumConfirmed; i++ {
-				s.mine(nil)
+				s.mockMine(nil)
 			}
 			meta := s.blockchain.VotingStatus("TestCommittedPoll")
 
@@ -189,7 +370,7 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 			}, 0, s.voters[0].PublicKey)
 			voteTxn.Sign(s.voters[0].PrivateKey)
 
-			s.mine([]*Transaction{txn, voteTxn})
+			s.mockMine([]*Transaction{txn, voteTxn})
 			startBlock := s.blockchain.Get(s.blockchain.GetLastHash()).BlockNum
 			for i := 0; i < NumConfirmed; i++ {
 				voteTxn = NewTransaction(&Payload{
@@ -200,7 +381,7 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 					Extra:    []string{s.cands[i%2].Name},
 				}, 0, s.voters[(i+1)%len(s.voters)].PublicKey)
 				voteTxn.Sign(s.voters[(i+1)%len(s.voters)].PrivateKey)
-				s.mine([]*Transaction{voteTxn})
+				s.mockMine([]*Transaction{voteTxn})
 			}
 			meta := s.blockchain.VotingStatus("TestPollWithVotes")
 
@@ -247,7 +428,7 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 			}, 0, s.voters[0].PublicKey)
 			voteTxn.Sign(s.voters[0].PrivateKey)
 
-			s.mine([]*Transaction{txn, voteTxn})
+			s.mockMine([]*Transaction{txn, voteTxn})
 			startBlock := s.blockchain.Get(s.blockchain.GetLastHash()).BlockNum
 			for i := 0; i < 4; i++ {
 				voteTxn = NewTransaction(&Payload{
@@ -258,10 +439,10 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 					Extra:    []string{s.cands[i%2].Name},
 				}, 0, s.voters[(i+1)%len(s.voters)].PublicKey)
 				voteTxn.Sign(s.voters[(i+1)%len(s.voters)].PrivateKey)
-				s.mine([]*Transaction{voteTxn})
+				s.mockMine([]*Transaction{voteTxn})
 			}
 			for i := 0; i < NumConfirmed; i++ {
-				s.mine(nil)
+				s.mockMine(nil)
 			}
 			meta := s.blockchain.VotingStatus("TestTimedPollWithVotes")
 
@@ -299,7 +480,7 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 			}, 0, s.admins[0].PublicKey)
 			txn.Sign(s.admins[0].PrivateKey)
 
-			s.mine([]*Transaction{txn})
+			s.mockMine([]*Transaction{txn})
 			startBlock := s.blockchain.Get(s.blockchain.GetLastHash()).BlockNum
 
 			voteTxn := NewTransaction(&Payload{
@@ -319,7 +500,7 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 				Extra:    nil,
 			}, 0, s.admins[0].PublicKey)
 			terminateTxn.Sign(s.admins[0].PrivateKey)
-			s.mine([]*Transaction{voteTxn, terminateTxn})
+			s.mockMine([]*Transaction{voteTxn, terminateTxn})
 			for i := 0; i < 4; i++ {
 				voteTxn = NewTransaction(&Payload{
 					Method:   PayloadMethodVote,
@@ -329,10 +510,10 @@ func (s *BlockchainTestSuite) TestPollStatus() {
 					Extra:    []string{s.cands[i%2].Name},
 				}, 0, s.voters[(i+1)%len(s.voters)].PublicKey)
 				voteTxn.Sign(s.voters[(i+1)%len(s.voters)].PrivateKey)
-				s.mine([]*Transaction{voteTxn})
+				s.mockMine([]*Transaction{voteTxn})
 			}
 			for i := 0; i < NumConfirmed; i++ {
-				s.mine(nil)
+				s.mockMine(nil)
 			}
 			meta := s.blockchain.VotingStatus("TestTerminatedPollWithVotes")
 
@@ -366,21 +547,44 @@ func (s *BlockchainTestSuite) getSigners(n uint) (signers []*Identity.Signer) {
 	return
 }
 
-func (s *BlockchainTestSuite) mine(txns []*Transaction) {
+func (s *BlockchainTestSuite) resetBlockchain() {
+	s.storage = new(util.Database)
+	err := s.storage.New("", true)
+	s.Require().Nil(err)
+	s.blockchain = NewBlockChain(s.storage)
+	err = s.blockchain.Init()
+	s.Require().Nil(err)
+}
+
+// mockAddBlock mocks adding the block to the blockchain, without validating transactions or pow.
+// Sanity check will still in place.
+func (s *BlockchainTestSuite) mockAddBlock(block *Block) {
+	success, _, _ := s.blockchain.Put(*block, true)
+	s.Require().True(success)
+}
+
+// mockMine mocks the mining process without actually running the proof of work algorithm.
+// Sets the block hash to block number.
+func (s *BlockchainTestSuite) mockMine(txns []*Transaction) {
 	valids := s.blockchain.ValidatePendingTxns(txns)
 	for _, valid := range valids {
 		s.Require().True(valid)
 	}
+
+	prevHash := s.blockchain.GetLastHash()
+	height := s.blockchain.Get(prevHash).BlockNum + 1
+	timestamp := time.Now().Unix()
+	difficulty := s.blockchain.AdjustDifficulty(prevHash, s.blockchain.Get(prevHash).Difficulty, timestamp, height)
 	block := Block{
-		PrevHash: s.blockchain.GetLastHash(),
-		BlockNum: s.blockchain.Get(s.blockchain.GetLastHash()).BlockNum + 1,
-		Nonce:    0,
-		Txns:     txns,
-		MinerID:  "test",
-		Hash:     []byte{},
+		PrevHash:   prevHash,
+		BlockNum:   height,
+		Timestamp:  timestamp,
+		Difficulty: difficulty,
+		Nonce:      0,
+		Txns:       txns,
+		MinerID:    "test",
+		Hash:       []byte{byte(height)},
 	}
-	pow := *NewProof(&block)
-	pow.Run()
 	success, _, _ := s.blockchain.Put(block, true)
 	s.Require().True(success)
 }

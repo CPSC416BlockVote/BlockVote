@@ -5,15 +5,18 @@ import (
 	"encoding/gob"
 	"fmt"
 	"log"
+	"time"
 )
 
 type Block struct {
-	PrevHash []byte
-	BlockNum uint
-	Nonce    uint32
-	Txns     []*Transaction
-	MinerID  string
-	Hash     []byte
+	BlockNum   uint
+	Difficulty float64
+	Hash       []byte
+	MinerID    string
+	Nonce      uint32
+	PrevHash   []byte
+	Timestamp  int64
+	Txns       []*Transaction
 }
 
 // ----- Block APIs -----
@@ -22,6 +25,8 @@ type Block struct {
 func (b *Block) Genesis() {
 	b.PrevHash = []byte{}
 	b.BlockNum = 0
+	b.Difficulty = InitialDifficulty // initial difficulty is set to 8 leading zeros
+	b.Timestamp = time.Now().Unix()
 	b.Txns = []*Transaction{}
 	b.MinerID = "Coord"
 	// get nonce and hash from POW
@@ -56,8 +61,10 @@ func PrintBlock(block *Block) {
 	str := ""
 	str += fmt.Sprintf("Block #%d (%x)\n", block.BlockNum, block.Hash[:5])
 	str += fmt.Sprintf("\tPrevHash:\t %x\n", block.PrevHash[:5])
+	str += fmt.Sprintf("\tDifficulty:\t %.2f\n", block.Difficulty)
 	str += fmt.Sprintf("\tNonce:\t\t %d\n", block.Nonce)
 	str += fmt.Sprintf("\tMinerID:\t %s\n", block.MinerID)
+	str += fmt.Sprintf("\tTimestamp:\t %s\n", time.Unix(block.Timestamp, 0).String())
 	str += fmt.Sprintf("\tTxns:\t\t %d\n", len(block.Txns))
 	for _, txn := range block.Txns {
 		str += fmt.Sprintf("\t    status %d\t	%s\n", txn.Receipt.Code, txn.Data.ToString())

@@ -12,10 +12,10 @@ Group members: Zhongze Chen, Eric Lyu, Mingyang Ye, Xinyi Ye, Yitong Zhao
 - [ ] Improve gossip protocol
     - [x] Allow cycle to be triggered by both intervals and new updates
     - [x] Allow nodes to subscribe to specific types of updates
-    - [ ] Truncate log and local cache (in progress)
+    - [ ] Truncate log and local cache
 - [x] Allow miner rejoin
-- [ ] Support multiple elections
-- [ ] Support dynamic difficulties
+- [x] Support multiple elections
+- [x] Support dynamic difficulties
 
 ## Usage
 

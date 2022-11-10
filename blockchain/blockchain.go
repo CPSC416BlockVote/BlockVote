@@ -15,6 +15,10 @@ var LastHashKey = []byte("LastHash")
 
 const BlockKeyPrefix = "block-"
 const NumConfirmed = 4
+const InitialDifficulty = 512
+const DifficultyAdjustInterval = 5
+const MaxDifficultyAdjustFactor = 4
+const ExpectedMiningSpeedSeconds = 16
 
 type BlockChain struct {
 	mu       sync.Mutex
@@ -147,8 +151,9 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 	defer bc.mu.Unlock()
 
 	// sanity check
-	if len(block.PrevHash) == 0 || block.BlockNum == 0 || len(block.Hash) == 0 || len(block.MinerID) == 0 {
-		log.Println("[WARN] Block has missing values and will not be added to the chain.")
+	if len(block.PrevHash) == 0 || block.BlockNum == 0 || len(block.Hash) == 0 ||
+		len(block.MinerID) == 0 || block.Difficulty <= 0 || block.Timestamp <= 0 {
+		log.Println("[WARN] Block has missing or incorrect values and will not be added to the chain.")
 		success = false
 		return
 	}
@@ -166,6 +171,14 @@ func (bc *BlockChain) Put(block Block, owned bool) (success bool, newTxns []*Tra
 
 	// validate
 	if !owned {
+		// validate dynamic difficulty
+		difficulty := bc._AdjustDifficulty(block.PrevHash, bc.Get(block.PrevHash).Difficulty, block.Timestamp, block.BlockNum)
+		if difficulty != block.Difficulty {
+			log.Println("[WARN] Block has incorrect difficulty and is rejected.")
+			success = false
+			return
+		}
+
 		// validate pow
 		pow := NewProof(&block)
 		if !pow.Validate() {
@@ -281,6 +294,43 @@ func (bc *BlockChain) NewIterator(hash []byte) *ChainIterator {
 		Index:       -1,
 		BlockChain:  bc,
 	}
+}
+
+// AdjustDifficulty adjusts the difficulty based on previous mining rate. If currentHeight is at the specified interval,
+// it will go back specified number of blocks from the block with prevHash and compute the actual mining time.
+// currentTimeStamp is used to compute the mining time of the last block. The adjustment will be applied to
+// prevDifficulty to compute current difficulty.
+func (bc *BlockChain) AdjustDifficulty(prevHash []byte, prevDifficulty float64, currentTimestamp int64, currentHeight uint) float64 {
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	return bc._AdjustDifficulty(prevHash, prevDifficulty, currentTimestamp, currentHeight)
+}
+
+func (bc *BlockChain) _AdjustDifficulty(prevHash []byte, prevDifficulty float64, currentTimestamp int64, currentHeight uint) float64 {
+	// only adjust difficulty at given interval
+	if currentHeight == 1 || (currentHeight-1)%DifficultyAdjustInterval != 0 {
+		return prevDifficulty
+	}
+
+	iter := bc.NewIterator(prevHash)
+
+	var block *Block
+	var end bool
+	count := uint8(1)
+	// TODO: handle the case where the chain ends unexpectedly?
+	for block, end = iter.Next(); !end && count != DifficultyAdjustInterval; block, end = iter.Next() {
+		count++
+	}
+
+	actual := currentTimestamp - block.Timestamp
+	// TODO: maybe handle actual == 0 a bit different?
+	if actual == 0 { // avoid division by zero
+		return prevDifficulty
+	}
+	adjustFactor := float64(ExpectedMiningSpeedSeconds*DifficultyAdjustInterval) / float64(actual)                            // expected over actual
+	adjustFactor = math.Max(math.Min(adjustFactor, float64(MaxDifficultyAdjustFactor)), 1/float64(MaxDifficultyAdjustFactor)) // bound adjust factor
+	difficulty := adjustFactor * prevDifficulty                                                                               // adjust difficulty
+	return difficulty
 }
 
 // INTERNAL USE ONLY

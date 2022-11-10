@@ -21,7 +21,6 @@ type MinerConfig struct {
 	CoordAddr         string
 	MinerAddr         string
 	TracingServerAddr string
-	Difficulty        uint8
 	Secret            []byte
 	TracingIdentity   string
 	MaxTxn            uint8
@@ -96,7 +95,7 @@ type Miner struct {
 	rtMu         sync.Mutex
 	ReceivedTxns map[string]bool
 	MemoryPool   TxnPool
-	MaxTxn       uint8
+	Config       MinerConfig
 
 	queryChan  <-chan gossip.Update
 	updateChan chan<- gossip.Update
@@ -177,11 +176,10 @@ func (cc *CoordConnection) Close() {
 	}
 }
 
-func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn uint8) error {
+func (m *Miner) Start(config MinerConfig) error {
 	gob.Register(blockchain.Rules{})
 
-	m.MaxTxn = maxTxn
-	m.Info.NodeID = minerId
+	m.Info.NodeID = config.MinerId
 
 	// 1. Initialization
 	resume := m.InitStorage()
@@ -196,7 +194,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 		// 2.1 Contact coord and download from peers
 		// 2.1.1 Connect to coord
 		log.Println("[INFO] Retrieving information from coord...")
-		coordConn := NewCoordConnection(minerAddr, coordAddr)
+		coordConn := NewCoordConnection(config.MinerAddr, config.CoordAddr)
 		coordConn.Connect()
 		// 2.1.2 Get peers from coord
 		reply := GetPeersReply{}
@@ -287,7 +285,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	}
 
 	// 3. Start API services
-	minerIP := minerAddr[0:strings.Index(minerAddr, ":")]
+	minerIP := config.MinerAddr[0:strings.Index(config.MinerAddr, ":")]
 	entryPointAPI := new(EntryPointAPI)
 	entryPointAPI.e = m
 	clientListenAddr, err := util.NewRPCServerWithIp(entryPointAPI, minerIP)
@@ -310,7 +308,7 @@ func (m *Miner) Start(minerId string, coordAddr string, minerAddr string, maxTxn
 	go m.MiningService()
 	go m.DigestUpdates()
 
-	log.Printf("[INFO] %s joined successfully\n", minerId)
+	log.Printf("[INFO] %s joined successfully\n", config.MinerId)
 
 	m.start = true
 	m.cond.Broadcast()
@@ -583,15 +581,20 @@ func (m *Miner) MiningService() {
 						}
 					}
 					log.Printf("[INFO] Pool size %d (remove invalid txns)\n", len(m.MemoryPool.PendingTxns))
+
 					// construct current block
-					height := m.Blockchain.Get(m.Blockchain.GetLastHash()).BlockNum + 1
+					height := m.Blockchain.Get(prevHash).BlockNum + 1
+					timestamp := time.Now().Unix() // update block timestamp
+					difficulty := m.Blockchain.AdjustDifficulty(prevHash, m.Blockchain.Get(prevHash).Difficulty, timestamp, height)
 					block := blockchain.Block{
-						PrevHash: prevHash,
-						BlockNum: height,
-						Nonce:    0,
-						Txns:     validatedTxns,
-						MinerID:  m.Info.NodeID,
-						Hash:     []byte{},
+						PrevHash:   prevHash,
+						BlockNum:   height,
+						Timestamp:  timestamp,
+						Difficulty: difficulty,
+						Nonce:      0,
+						Txns:       validatedTxns,
+						MinerID:    m.Info.NodeID,
+						Hash:       []byte{},
 					}
 					// create a proof of work instance
 					pow = *blockchain.NewProof(&block)
@@ -645,7 +648,7 @@ func (m *Miner) MiningService() {
 }
 
 func (m *Miner) selectTxns() (selectedTxn []*blockchain.Transaction) {
-	for i := 0; i < int(math.Min(float64(m.MaxTxn), float64(len(m.MemoryPool.PendingTxns)))); i++ {
+	for i := 0; i < int(math.Min(float64(m.Config.MaxTxn), float64(len(m.MemoryPool.PendingTxns)))); i++ {
 		txn := m.MemoryPool.PendingTxns[i] // make a copy first. avoid pointing to the slot in slice.
 		selectedTxn = append(selectedTxn, &txn)
 	}
