@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/stretchr/testify/suite"
 	"testing"
+	"time"
 )
 
 type TxnValidationTestSuite struct {
@@ -627,13 +628,19 @@ func (s *TxnValidationTestSuite) getSigners(n uint) (signers []*Identity.Signer)
 }
 
 func (s *TxnValidationTestSuite) mine(txns []*Transaction) {
+	prevHash := s.blockchain.GetLastHash()
+	height := s.blockchain.Get(prevHash).BlockNum + 1
+	timestamp := time.Now().Unix()
+	difficulty := s.blockchain.AdjustDifficulty(prevHash, s.blockchain.Get(prevHash).Difficulty, timestamp, height)
 	block := Block{
-		PrevHash: s.blockchain.GetLastHash(),
-		BlockNum: s.blockchain.Get(s.blockchain.GetLastHash()).BlockNum + 1,
-		Nonce:    0,
-		Txns:     txns,
-		MinerID:  "test",
-		Hash:     []byte{},
+		PrevHash:   prevHash,
+		BlockNum:   height,
+		Timestamp:  timestamp,
+		Difficulty: difficulty,
+		Nonce:      0,
+		Txns:       txns,
+		MinerID:    "test",
+		Hash:       []byte{},
 	}
 	pow := *NewProof(&block)
 	pow.Run()

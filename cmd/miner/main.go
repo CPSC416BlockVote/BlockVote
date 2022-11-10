@@ -37,5 +37,5 @@ func main() {
 	}
 
 	miner := blockvote.NewMiner()
-	miner.Start(config.MinerId, config.CoordAddr, config.MinerAddr, config.MaxTxn)
+	miner.Start(config)
 }

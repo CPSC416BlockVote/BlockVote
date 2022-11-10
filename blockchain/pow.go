@@ -16,12 +16,11 @@ type ProofOfWork struct {
 	Target *big.Int
 }
 
-const NumZeros = 8
-
 // NewProof creates a new ProofOfWork structure
 func NewProof(b *Block) *ProofOfWork {
 	target := big.NewInt(1)
-	target.Lsh(target, uint(256-NumZeros))
+	target.Lsh(target, uint(256))
+	target.Div(target, big.NewInt(int64(b.Difficulty)))
 	pow := &ProofOfWork{b, target}
 	return pow
 }
@@ -76,20 +75,22 @@ func (pow *ProofOfWork) BlockToBytes(nonce uint32) []byte {
 		[][]byte{
 			pow.Block.PrevHash,
 			NumToBytes(uint32(pow.Block.BlockNum)),
+			NumToBytes(pow.Block.Timestamp),
+			[]byte(pow.Block.MinerID),
 			NumToBytes(nonce),
 			pow.HashTxns(),
-			[]byte(pow.Block.MinerID),
 		},
 		[]byte{},
 	)
 	return data
 }
 
-func NumToBytes(num uint32) []byte {
+//NumToBytes Converts a number to bytes. Note that the number must have fixed size, i.e. int64 instead of int.
+func NumToBytes(num interface{}) []byte {
 	buff := new(bytes.Buffer)
 	err := binary.Write(buff, binary.BigEndian, num)
 	if err != nil {
-		log.Println("[WARN] error when converting uint32 to bytes.", err)
+		log.Println("[WARN] error when converting number to bytes.", err)
 	}
 	return buff.Bytes()
 }
