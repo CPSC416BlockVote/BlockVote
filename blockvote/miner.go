@@ -8,7 +8,6 @@ import (
 	"encoding/gob"
 	"errors"
 	"log"
-	"math"
 	"net/rpc"
 	"os"
 	"strings"
@@ -51,7 +50,7 @@ type DownloadArgs struct {
 type DownloadReply struct {
 	BlockChain [][]byte
 	LastHash   []byte
-	MemoryPool TxnPool
+	MemoryPool []blockchain.Transaction
 	Peers      []gossip.Peer
 }
 
@@ -94,7 +93,7 @@ type Miner struct {
 	Info         NodeInfo
 	rtMu         sync.Mutex
 	ReceivedTxns map[string]bool
-	MemoryPool   TxnPool
+	MemoryPool   *blockchain.MemoryPool
 	Config       MinerConfig
 
 	queryChan  <-chan gossip.Update
@@ -113,14 +112,11 @@ func NewMiner() *Miner {
 	return &Miner{
 		Storage:          &util.Database{},
 		ReceivedTxns:     make(map[string]bool),
+		MemoryPool:       blockchain.NewMemoryPool(200),
 		TxnRecvChan:      make(chan *blockchain.Transaction, 500),
 		BlockRecvChan:    make(chan *blockchain.Block, 50),
 		ChainUpdatedChan: make(chan int, 50),
 	}
-}
-
-type TxnPool struct {
-	PendingTxns []blockchain.Transaction
 }
 
 type CoordConnection struct {
@@ -179,6 +175,7 @@ func (cc *CoordConnection) Close() {
 func (m *Miner) Start(config MinerConfig) error {
 	gob.Register(blockchain.Rules{})
 
+	m.Config = config
 	m.Info.NodeID = config.MinerId
 
 	// 1. Initialization
@@ -202,7 +199,7 @@ func (m *Miner) Start(config MinerConfig) error {
 		// 2.1.3 Download data from peers
 		var dlBlockchain [][]byte
 		var dlLastHash []byte
-		var dlTxnPool TxnPool
+		var dlTxnPool []blockchain.Transaction
 		var activeMinerPeers []gossip.Peer
 		for _, p := range reply.Peers {
 			if p.Type == gossip.TypeMiner && p.Active {
@@ -239,7 +236,7 @@ func (m *Miner) Start(config MinerConfig) error {
 					dlBlockchain = reply.BlockChain
 					dlLastHash = reply.LastHash
 					dlTxnPool = reply.MemoryPool
-					log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
+					log.Printf("[INFO] Pool size %d (get from peer)\n", m.MemoryPool.Size())
 					break
 				}
 				if i == len(activeMinerPeers) {
@@ -263,8 +260,8 @@ func (m *Miner) Start(config MinerConfig) error {
 
 		// 2.1.4.2 Setup txn pool (download from any of its peers)
 		log.Println("[INFO] Setting up memory pool...")
-		m.MemoryPool = dlTxnPool
-		log.Printf("[INFO] Pool size %d (get from peer)\n", len(m.MemoryPool.PendingTxns))
+		m.MemoryPool.AddTxns(dlTxnPool)
+		log.Printf("[INFO] Pool size %d (get from peer)\n", m.MemoryPool.Size())
 
 		// 2.1.4.3 Setup peers
 		peers = reply.Peers
@@ -397,7 +394,7 @@ func (m *Miner) InitGossip(ip string, peers []gossip.Peer) error {
 		}
 	}
 	// Existing txn update from pool
-	for _, txn := range m.MemoryPool.PendingTxns {
+	for _, txn := range m.MemoryPool.All() {
 		if !txnExistMap[string(txn.ID)] {
 			txnExistMap[string(txn.ID)] = true
 			existingUpdates = append(existingUpdates, gossip.NewUpdate(gossip.TransactionIDPrefix, txn.ID, txn.Serialize()))
@@ -451,10 +448,8 @@ func (m *Miner) TxnService() {
 			// add unseen txn to pool
 			m.ReceivedTxns[sid] = true
 			m.rtMu.Unlock()
-			m.mu.Lock()
-			m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns, *txn)
-			m.mu.Unlock()
-			log.Printf("[INFO] Pool size %d (receive txn)\n", len(m.MemoryPool.PendingTxns))
+			m.MemoryPool.AddTxn(*txn)
+			log.Printf("[INFO] Pool size %d (receive txn)\n", m.MemoryPool.Size())
 		} else {
 			m.rtMu.Unlock()
 		}
@@ -471,7 +466,7 @@ func (m *Miner) BlockService() {
 		if pow.Validate() {
 			m.mu.Lock()
 			prevLastHash := m.Blockchain.GetLastHash()
-			success, newTxns, oldTxns := m.Blockchain.Put(*block, false)
+			success, newTxns, _ := m.Blockchain.Put(*block, false)
 			curLastHash := m.Blockchain.GetLastHash()
 			if success {
 				if newTxns == nil { // no fork switching
@@ -480,20 +475,8 @@ func (m *Miner) BlockService() {
 						log.Printf("[INFO] New block (%x) from peers is added to the current chain\n", block.Hash[:5])
 						blockchain.PrintBlock(block)
 						// remove new block's txns from pool
-						for i := 0; i < len(m.MemoryPool.PendingTxns); {
-							rm := false
-							for j := 0; j < len(block.Txns); j++ {
-								if bytes.Compare(m.MemoryPool.PendingTxns[i].ID, block.Txns[j].ID) == 0 {
-									rm = true
-								}
-							}
-							if rm {
-								m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
-							} else {
-								i++
-							}
-						}
-						log.Printf("[INFO] Pool size %d (remove included txns)\n", len(m.MemoryPool.PendingTxns))
+						m.MemoryPool.RemoveTxns(block.Txns)
+						log.Printf("[INFO] Pool size %d (remove included txns)\n", m.MemoryPool.Size())
 						// notify mining service of new last hash
 						m.ChainUpdatedChan <- 1
 					} else {
@@ -506,27 +489,16 @@ func (m *Miner) BlockService() {
 					log.Printf("[INFO] New block (%x) from peers is added to an alternative branch\n", block.Hash[:5])
 					blockchain.PrintBlock(block)
 					log.Println("[INFO] Switching to a new chain")
-					// first, prepend old txns that get kicked out b.c. it is not on the longest chain anymore
-					for i := len(oldTxns) - 1; i >= 0; i-- {
-						m.MemoryPool.PendingTxns = append([]blockchain.Transaction{*oldTxns[i]}, m.MemoryPool.PendingTxns...)
-					}
+					// TODO: we no longer recover the transactions that are in the uncle block.
+					//// first, prepend old txns that get kicked out b.c. it is not on the longest chain anymore
+					//for i := len(oldTxns) - 1; i >= 0; i-- {
+					//	m.MemoryPool.PendingTxns = append([]blockchain.Transaction{*oldTxns[i]}, m.MemoryPool.PendingTxns...)
+					//}
 					// then, remove new transactions in the new fork from pool
 					// this includes the txns that are in the new block
 					// NOTE: this must be done second as there may be overlap between the two sets of txns
-					for i := 0; i < len(m.MemoryPool.PendingTxns); {
-						rm := false
-						for j := 0; j < len(newTxns); j++ {
-							if bytes.Compare(m.MemoryPool.PendingTxns[i].ID, newTxns[j].ID) == 0 {
-								rm = true
-							}
-						}
-						if rm {
-							m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
-						} else {
-							i++
-						}
-					}
-					log.Printf("[INFO] Pool size %d (switch fork)\n", len(m.MemoryPool.PendingTxns))
+					m.MemoryPool.RemoveTxns(newTxns)
+					log.Printf("[INFO] Pool size %d (switch fork)\n", m.MemoryPool.Size())
 					// notify mining service of new last hash
 					m.ChainUpdatedChan <- 1
 				}
@@ -572,15 +544,8 @@ func (m *Miner) MiningService() {
 						}
 					}
 					// remove invalid txns from pool
-					for i := 0; i < len(m.MemoryPool.PendingTxns) && len(invalidTxid) > 0; {
-						if bytes.Compare(invalidTxid[0], m.MemoryPool.PendingTxns[i].ID) == 0 {
-							invalidTxid = invalidTxid[1:]
-							m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
-						} else {
-							i++
-						}
-					}
-					log.Printf("[INFO] Pool size %d (remove invalid txns)\n", len(m.MemoryPool.PendingTxns))
+					m.MemoryPool.RemoveTxnsByTxID(invalidTxid)
+					log.Printf("[INFO] Pool size %d (remove invalid txns)\n", m.MemoryPool.Size())
 
 					// construct current block
 					height := m.Blockchain.Get(prevHash).BlockNum + 1
@@ -621,21 +586,8 @@ func (m *Miner) MiningService() {
 								m.updateChan <- gossip.NewUpdate(gossip.BlockIDPrefix, block.Hash, block.Encode())
 
 								// remove included txns from pending pool
-								for i := 0; i < len(m.MemoryPool.PendingTxns); {
-									rm := false
-									for j := 0; j < len(block.Txns); j++ {
-										if bytes.Compare(m.MemoryPool.PendingTxns[i].ID, block.Txns[j].ID) == 0 {
-											rm = true
-											break
-										}
-									}
-									if rm {
-										m.MemoryPool.PendingTxns = append(m.MemoryPool.PendingTxns[:i], m.MemoryPool.PendingTxns[i+1:]...)
-									} else {
-										i++
-									}
-								}
-								log.Printf("[INFO] Pool size %d (remove included txns)\n", len(m.MemoryPool.PendingTxns))
+								m.MemoryPool.RemoveTxns(block.Txns)
+								log.Printf("[INFO] Pool size %d (remove included txns)\n", m.MemoryPool.Size())
 							}
 						}
 						m.mu.Unlock()
@@ -648,9 +600,9 @@ func (m *Miner) MiningService() {
 }
 
 func (m *Miner) selectTxns() (selectedTxn []*blockchain.Transaction) {
-	for i := 0; i < int(math.Min(float64(m.Config.MaxTxn), float64(len(m.MemoryPool.PendingTxns)))); i++ {
-		txn := m.MemoryPool.PendingTxns[i] // make a copy first. avoid pointing to the slot in slice.
-		selectedTxn = append(selectedTxn, &txn)
+	selected := m.MemoryPool.Get(uint(m.Config.MaxTxn))
+	for i := range selected {
+		selectedTxn = append(selectedTxn, &selected[i])
 	}
 	return
 }
@@ -701,11 +653,11 @@ func (m *Miner) CheckResults(pollID string) blockchain.PollMeta {
 	return m.Blockchain.VotingStatus(pollID)
 }
 
-func (m *Miner) Download() (encodedBlockchain [][]byte, lastHash []byte, txnPool TxnPool, peers []gossip.Peer) {
+func (m *Miner) Download() (encodedBlockchain [][]byte, lastHash []byte, txnPool []blockchain.Transaction, peers []gossip.Peer) {
 	// prepare reply data
 	m.mu.Lock() // lock ensures that blockchain data and memory pool are from the same moment
 	encodedBlockchain, lastHash = m.Blockchain.Encode()
-	txnPool = m.MemoryPool
+	txnPool = m.MemoryPool.All()
 	m.mu.Unlock()
 
 	peers = gossip.GetPeers(false, false) // its peers and itself
@@ -716,7 +668,7 @@ type EntryPoint interface {
 	ReceiveTxn(*blockchain.Transaction) bool
 	CheckTxnStatus([]byte) blockchain.TransactionStatus
 	CheckResults(string) blockchain.PollMeta
-	Download() ([][]byte, []byte, TxnPool, []gossip.Peer)
+	Download() ([][]byte, []byte, []blockchain.Transaction, []gossip.Peer)
 }
 
 type EntryPointAPI struct {

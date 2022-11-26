@@ -22,7 +22,7 @@ type TxnInfo struct {
 }
 
 type EV struct {
-	// Add EV instance state here.
+	// AddTxns EV instance state here.
 	rw               sync.RWMutex // mutex for arrays
 	connRw           sync.RWMutex // mutex for connections
 	ifRw             sync.RWMutex // mutex for info
